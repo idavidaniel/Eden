@@ -18,36 +18,33 @@ services:
       timeout: 5s
       retries: 10
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   backend:
     build: ./backend
     restart: unless-stopped
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command:
+      - uvicorn
+      - main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --reload
+      # Long-lived event streams must not hold a restart open.
+      - --timeout-graceful-shutdown=5
     environment:
       NVIDIA_API_KEY: ${NVIDIA_API_KEY:?set NVIDIA_API_KEY in .env}
       MODEL: ${MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
       DATABASE_URL: postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-agent_db}
-      REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+      DATA_DIR: /data
+      # Seals employee credentials at rest. Change it for anything real.
+      SECRET_KEY: ${SECRET_KEY:-dev-insecure-key}
+      RUN_CONCURRENCY: ${RUN_CONCURRENCY:-2}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
-      - ./backend:/app          # hot reload during development
-      - model_cache:/models     # cached sentence-transformer weights
+      - ./backend:/app             # hot reload during development
+      - workspace_data:/data       # project git repositories
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
 
   frontend:
@@ -70,4 +67,4 @@ services:
 
 volumes:
   postgres_data:
-  model_cache:
+  workspace_data:

@@ -1,32 +1,33 @@
 # Roadmap
 
-Status of the platform against the blueprint in `project-document.txt`.
-See the table in [README.md](README.md) for what each item means in practice.
-
 ## Done
 
-- [x] Workspace skills (`.agents/skills/nemotron_api`, `.agents/skills/langgraph_memory`)
-- [x] Dockerised stack: Postgres + pgvector, Redis, FastAPI backend, Next.js frontend,
-      with healthchecks and ordered startup
-- [x] Agent runtime: LangGraph `StateGraph` over Nemotron, reasoning kept separate
-      from the answer
-- [x] Core memory blocks (persona / human) rendered into the system prompt each turn
-- [x] Per-thread checkpointing in Postgres, in-memory fallback when no database
-- [x] Token streaming end to end (LangGraph custom stream → SSE → dashboard)
-- [x] Contextual-retrieval ingestion and hybrid search (pgvector + BM25 + cross-encoder)
-- [x] MCP server: JSON-RPC 2.0 `initialize` / `ping` / `tools/list` / `tools/call`
-- [x] Test suite that runs without external services, plus CI
+- [x] Companies with a profile (description, mission, handbook) that every
+      employee reads before working
+- [x] Role catalogue and hiring, org chart from reporting lines
+- [x] Per-employee service accounts (username, password, API token per tool),
+      sealed at rest, revealable and rotatable
+- [x] Enforced toolbelts — the registry refuses tools an employee was not issued,
+      and their prompt says who to ask instead
+- [x] Ticket tracker: types, six statuses, acceptance criteria, comments,
+      per-ticket agent work log
+- [x] Git workspace per project: read, write, sandboxed run, commit as the employee
+- [x] Wiki with spaces and version history
+- [x] Chat channels where @mentioning an employee gets a real reply
+- [x] Autonomous runs: plan → work → QA review → rework → wrap up, with
+      pause/resume/stop and recovery from restarts
+- [x] Live activity stream (SSE) behind every surface
+- [x] MCP bridge exposing the same tools over JSON-RPC 2.0
+- [x] 36 backend tests (SQLite + stubbed model), lint and CI
 
 ## Next
 
-- [ ] Let the agent actually call its MCP tools (tool-calling loop in the graph)
-- [ ] Real authorization: verify OAuth 2.1 JWTs against the IdP's JWKS, and put
-      auth on the app API, not just `/mcp`
-- [ ] Tenant isolation at the database level (Postgres row-level security)
-- [ ] Semantic cache (embed the prompt, vector-search cached entries) — today the
-      cache only hits on an exact prompt match
-- [ ] Async task execution: queue long-running jobs instead of holding the request
-      open, with retries and step-level observability (Temporal in the blueprint)
-- [ ] Knowledge-base management UI: upload documents, browse chunks, inspect retrieval
-- [ ] Prompt compression for long-context turns (LLMLingua)
-- [ ] Usage metering and billing hooks
+- [ ] Connectors: Jira Cloud, Confluence and GitHub adapters behind the existing
+      tool interface, configured per company in Settings
+- [ ] Platform authentication and per-user ownership of companies
+- [ ] Verify MCP bearer tokens against an IdP's JWKS instead of checking presence
+- [ ] Parallel employees inside one run (dependency-aware scheduling)
+- [ ] Long-term memory per employee: what they learned on past projects
+- [ ] Company knowledge base (upload documents, retrieval as a tool)
+- [ ] Cost and token accounting per run, per employee
+- [ ] Human approval gate for chosen actions (opt-in per company)

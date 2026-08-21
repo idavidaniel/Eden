@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """End-to-end smoke test against a running stack.
 
+Creates a throwaway company, checks every surface responds, then deletes it.
 Usage: python3 scripts/smoke_test.py [base_url]
-Exits non-zero on the first failure so it can gate a deploy.
 """
 
 import json
@@ -18,23 +18,24 @@ MCP_HEADERS = {
 }
 
 
-def request(path, payload=None, headers=None, timeout=180):
+def call(path, payload=None, method=None, headers=None, timeout=60):
     data = json.dumps(payload).encode() if payload is not None else None
-    req = urllib.request.Request(
+    request = urllib.request.Request(
         f"{BASE}{path}",
         data=data,
         headers=headers or ({"Content-Type": "application/json"} if data else {}),
-        method="POST" if data else "GET",
+        method=method or ("POST" if data else "GET"),
     )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return json.loads(response.read())
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read()
+        return json.loads(body) if body else None
 
 
 def check(name, fn):
     print(f"→ {name} ... ", end="", flush=True)
     try:
         result = fn()
-    except (urllib.error.URLError, urllib.error.HTTPError, AssertionError) as exc:
+    except (urllib.error.URLError, urllib.error.HTTPError, AssertionError, ValueError) as exc:
         print(f"FAIL\n   {exc}")
         sys.exit(1)
     print("ok")
@@ -42,43 +43,93 @@ def check(name, fn):
 
 
 def main():
-    health = check("health", lambda: request("/health"))
-    print(f"   model={health['model']} persistence={health['persistence']} cache={health['cache']}")
+    health = check("health", lambda: call("/health"))
+    print(f"   model={health['model']} persistence={health['persistence']}")
     if not health["llm_configured"]:
-        print("   NVIDIA_API_KEY is not set; agent calls will fail.")
+        print("   NVIDIA_API_KEY is not set; the employees cannot think.")
         sys.exit(1)
 
-    tools = check(
-        "mcp tools/list",
-        lambda: request(
-            "/mcp",
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-            MCP_HEADERS,
-        )["result"]["tools"],
-    )
-    print(f"   tools: {', '.join(t['name'] for t in tools)}")
+    roles = check("role catalogue", lambda: call("/roles"))
+    print(f"   {len(roles)} roles available")
 
-    def run_turn():
-        body = request(
-            "/run_task",
+    company = check(
+        "found a company",
+        lambda: call(
+            "/companies",
             {
-                "thread_id": "smoke-test",
-                "message": "Reply with exactly the word: pong",
-                "persona_block": "You are terse.",
-                "human_block": "The client is running a smoke test.",
+                "name": "Smoke Test Co",
+                "description": "Temporary company created by the smoke test.",
+                "starting_team": ["engineering_manager", "backend_engineer", "qa_engineer"],
             },
-        )
-        assert body["reply"], "empty reply from the agent"
-        return body
-
-    turn = check("agent turn", run_turn)
-    print(f"   reasoning: {len(turn['reasoning'])} chars")
-    print(f"   reply: {turn['reply'][:120]}")
-
-    check(
-        "thread replay",
-        lambda: request("/threads/smoke-test")["messages"] or _fail("no checkpointed messages"),
+        ),
     )
+    company_id = company["id"]
+
+    try:
+        team = check("team was hired", lambda: call(f"/companies/{company_id}/employees"))
+        assert len(team) == 3, f"expected 3 hires, got {len(team)}"
+        print(f"   {', '.join(f'{p['name']} ({p['title']})' for p in team)}")
+
+        creds = check(
+            "credentials are issued",
+            lambda: call(f"/employees/{team[0]['id']}/credentials")["accounts"],
+        )
+        assert creds and creds[0]["password"], "no password issued"
+        print(f"   {len(creds)} service accounts for {team[0]['name']}")
+
+        project = check(
+            "create a project",
+            lambda: call(
+                f"/companies/{company_id}/projects",
+                {"name": "Smoke Project", "brief": "Prove the workspace works."},
+            ),
+        )
+
+        check(
+            "workspace is a git repo",
+            lambda: call(f"/projects/{project['id']}/files")["entries"] or _fail("empty workspace"),
+        )
+        check(
+            "write a file",
+            lambda: call(
+                f"/projects/{project['id']}/file",
+                {"path": "smoke.txt", "content": "hello", "commit_message": "smoke"},
+                method="PUT",
+            ),
+        )
+        commits = check("commit history", lambda: call(f"/projects/{project['id']}/commits"))
+        assert commits[0]["subject"] == "smoke", "commit missing"
+
+        check(
+            "ticket board",
+            lambda: call(f"/projects/{project['id']}/tickets", {"title": "Smoke ticket"}),
+        )
+        check(
+            "wiki",
+            lambda: call(
+                f"/companies/{company_id}/documents", {"title": "Smoke page", "body": "hello"}
+            ),
+        )
+        channels = check("chat channels", lambda: call(f"/companies/{company_id}/channels"))
+        check(
+            "post a message",
+            lambda: call(f"/channels/{channels[0]['id']}/messages", {"body": "smoke test"}),
+        )
+
+        tools = check(
+            "mcp tools/list",
+            lambda: call(
+                "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=MCP_HEADERS
+            )["result"]["tools"],
+        )
+        print(f"   {len(tools)} tools exposed over MCP")
+
+        feed = check("activity feed", lambda: call(f"/companies/{company_id}/activity")["events"])
+        print(f"   {len(feed)} events recorded")
+    finally:
+        call(f"/companies/{company_id}", method="DELETE")
+        print("→ cleaned up the test company")
+
     print("\nAll checks passed.")
 
 

@@ -5,17 +5,6 @@ pydantic>=2.7
 python-dotenv>=1.0
 openai>=1.40
 
-# Agent runtime + persistence
-langgraph>=0.6
-langgraph-checkpoint-postgres>=2.0
-psycopg[binary,pool]>=3.2
-
-# Knowledge base
+# Persistence
 sqlalchemy>=2.0
-pgvector>=0.3
-sentence-transformers>=3.0
-rank-bm25>=0.2.2
-numpy>=1.26
-
-# Cache
-redis>=5.0
+psycopg[binary,pool]>=3.2

@@ -1,131 +1,138 @@
-# AI Employee as a Service (EaaS)
+# Eden — AI employees that work as a company
 
-A multi-tenant platform for building "AI employees": agents with a persona, a
-private knowledge base, persistent memory and a registry of tools they can call.
-This repository is the working prototype of the architecture described in
-[project-document.txt](project-document.txt).
+Create a company, describe what it does, hire AI employees into real roles, and
+give them a project. A manager breaks the brief into tickets, assigns them by
+role, and the team works the board: writing code in a git workspace, running
+tests, reviewing each other's work, documenting it in the wiki and coordinating
+in chat — while you watch it happen live and interrupt when you want to.
 
 ```
-┌────────────┐   /api/backend/*   ┌──────────────┐   OpenAI-compatible   ┌──────────┐
-│  Next.js   │ ─────────────────▶ │   FastAPI    │ ────────────────────▶ │ Nemotron │
-│ dashboard  │ ◀───  SSE  ─────── │ + LangGraph  │                       │ (NVIDIA) │
-└────────────┘                    └──────┬───────┘                       └──────────┘
-                                         │
-                          ┌──────────────┴──────────────┐
-                          ▼                             ▼
-                 Postgres + pgvector               Redis cache
-              (checkpoints, knowledge base)     (LLM responses)
+                     ┌──────────────────────────────────────────┐
+   You ─── brief ───▶│  Manager agent: plan → tickets → assign   │
+                     └───────────────┬──────────────────────────┘
+                                     │
+        ┌───────────────┬────────────┼─────────────┬────────────────┐
+        ▼               ▼            ▼             ▼                ▼
+    Backend eng    Frontend eng    QA eng     Tech writer      Product mgr
+        │               │            │             │                │
+        └──── each acts through their own accounts on ──────────────┘
+                 tracker · wiki · workspace(git) · chat
+                                     │
+                        every action ▼ appended to the activity feed → live UI
 ```
 
-## What works today
+## What it does
 
-| Capability | Status | Where |
-| --- | --- | --- |
-| Agent turn over Nemotron with visible reasoning | Working | [backend/agent/llm.py](backend/agent/llm.py) |
-| Token-by-token streaming to the dashboard (SSE) | Working | [backend/main.py](backend/main.py), [frontend/src/lib/api.ts](frontend/src/lib/api.ts) |
-| Core memory blocks (persona / human) kept out of the transcript | Working | [backend/agent/memory.py](backend/agent/memory.py) |
-| Per-thread state persisted in Postgres | Working | [backend/agent/graph.py](backend/agent/graph.py) |
-| Contextual-retrieval ingestion + hybrid search with reranking | Working | [backend/rag/](backend/rag) |
-| MCP tool registry (JSON-RPC 2.0, stateless) | Working | [backend/mcp_registry/](backend/mcp_registry) |
-| LLM response cache | Working, exact-match only (not semantic) | [backend/agent/cache.py](backend/agent/cache.py) |
-| MCP authorization | Mock — checks the header and bearer token, does not verify signatures | [backend/mcp_registry/auth.py](backend/mcp_registry/auth.py) |
-| Tenant isolation | Enforced in queries, no row-level security or auth on the app API yet | — |
-| The agent calling its own MCP tools | Not implemented — tools are exposed, the graph does not invoke them | — |
-| Durable execution (Temporal), billing, prompt compression | Not implemented | — |
+| Surface | What is there |
+| --- | --- |
+| **Companies** | Found a company with a description, mission and handbook — every employee reads it before working. |
+| **People** | Hire from a role catalogue (manager, PM, architect, backend, frontend, QA, writer, analyst, devops). Roster, org chart by reporting line, per-employee profile. |
+| **Credentials** | Each employee gets a username, password and API token *per tool*, sealed at rest and revealable or rotatable from their profile. |
+| **Projects & board** | Jira-shaped: epics/stories/tasks/bugs, six statuses, drag between columns, acceptance criteria, comments, and the agent's own work log per ticket. |
+| **Code workspace** | A real git repo per project. Agents read, write, **run** (sandboxed) and commit under their own name. Browse the tree, edit in the editor, read diffs. |
+| **Wiki** | Confluence-shaped spaces and pages with version history, written by the team as they work. |
+| **Chat** | Channels shared with the agents. Mention someone (`@Ada`) and they pick it up, use their tools, and reply. |
+| **Live feed** | Every tool call, commit, status change and message, streamed to the dashboard over SSE. |
+| **Runs** | Start, pause, resume or stop an autonomous run. QA-rejected work comes back for a rework pass. |
+| **MCP** | The same tool registry exposed over JSON-RPC 2.0, so external clients can act as an employee. |
 
 ## Quick start
 
 ```bash
-cp .env.example .env   # add your NVIDIA_API_KEY (https://build.nvidia.com)
+cp .env.example .env     # add NVIDIA_API_KEY from https://build.nvidia.com
 docker compose up --build
 ```
 
 - Dashboard: http://localhost:3000
 - API docs: http://localhost:8000/docs
-- Health: http://localhost:8000/health
 
-The first backend build downloads PyTorch and takes several minutes; the first
-knowledge-base call downloads the embedding and reranker models into the
-`model_cache` volume.
-
-Smoke-test the running stack:
+Then either click "New company" in the dashboard, or run the scripted demo:
 
 ```bash
-python3 scripts/smoke_test.py
+python3 scripts/demo.py
 ```
 
-## Running without Docker
+It founds a company, hires six employees, files a project brief and prints the
+team's activity as they work through it.
 
-```bash
-cd backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-uvicorn main:app --reload            # DATABASE_URL unset -> in-memory checkpoints
-```
+## How a run works
 
-```bash
-cd frontend
-npm install
-npm run dev                          # proxies to http://localhost:8000 by default
-```
+1. **Plan** — the manager reads the brief and the roster, then writes 4–8 tickets
+   with acceptance criteria and assigns each to the role that fits.
+2. **Work** — for each ticket, that employee gets their persona, the company
+   profile, the ticket, the workspace file list, the wiki index and recent chat.
+   They then act through their tools until they stop.
+3. **Review** — QA reads the acceptance criteria, inspects the files, runs the
+   tests, and either closes the ticket or sends it back with a comment.
+4. **Rework** — a second pass picks up anything QA rejected.
+5. **Wrap up** — the manager posts the outcome to `#general`.
 
-## API
+You can pause or stop between any two steps; the run checks before each one.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/health` | Liveness plus which backing services are configured |
-| `POST` | `/run_task` | Run one turn, return reasoning + reply |
-| `POST` | `/run_task/stream` | Same, streamed as SSE (`reasoning` / `content` / `done`) |
-| `GET` | `/threads/{id}` | Replay a thread's checkpointed transcript |
-| `POST` | `/knowledge/ingest` | Chunk, contextualise, embed and store a document |
-| `POST` | `/knowledge/search` | Hybrid search + cross-encoder rerank |
-| `POST` | `/mcp` | JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call` |
+## Guardrails that matter
 
-`/mcp` requires two headers:
-
-```bash
-curl -s localhost:8000/mcp \
-  -H 'Content-Type: application/json' \
-  -H 'Mcp-Protocol-Version: 2026-07-28' \
-  -H 'Authorization: Bearer dev-token' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-## Tests
-
-```bash
-cd backend && pip install -r requirements-dev.txt && pytest
-```
-
-The suite stubs the model provider, so it needs no API key, database or Redis.
-Frontend checks: `npm run lint && npm run build`.
-
-## Configuration
-
-All settings come from the environment; see [backend/config.py](backend/config.py).
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `NVIDIA_API_KEY` | — | Required for real model calls |
-| `MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | Any OpenAI-compatible NVIDIA model |
-| `DATABASE_URL` | unset | Unset = in-memory checkpoints, no knowledge base |
-| `REDIS_URL` | unset | Unset = caching disabled |
-| `REQUIRE_MCP_AUTH` | `true` | Set `false` to open `/mcp` for local experiments |
-| `API_URL` (frontend) | `http://localhost:8000` | Server-side only; the browser uses `/api/backend/*` |
+- **Toolbelts are enforced.** A manager calling `write_file` is refused by the
+  registry, and their prompt tells them what they cannot reach and who to ask.
+- **Commands are sandboxed.** `run_command` has no shell — no pipes, redirection
+  or chaining — and only allows interpreters and inspection tools
+  (`python3`, `pytest`, `node`, `ruff`, `ls`, `cat`, `grep`, `find`, `git`, …).
+- **Workspaces are contained.** Every path is resolved and rejected if it escapes
+  the project root.
+- **Restarts are survivable.** Runs interrupted by a restart are marked as such
+  instead of hanging in `running` forever.
 
 ## Repository layout
 
 ```
 backend/
-  config.py            environment-driven settings
-  main.py              FastAPI app: agent, knowledge and MCP routes
-  agent/               LangGraph runtime, core memory, LLM client, cache
-  rag/                 pgvector schema, ingestion, hybrid retrieval
-  mcp_registry/        MCP server, tool registry, authorization middleware
-  tests/               pytest suite (no external services required)
-frontend/
-  src/app/             App Router pages and the /api/backend proxy
-  src/components/      dashboard UI
-  src/lib/api.ts       typed client incl. SSE parsing
-scripts/smoke_test.py  end-to-end check against a running stack
+  config.py         environment-driven settings
+  db.py             engine, session, schema creation
+  models/           companies, employees, identities, projects, tickets, wiki, chat, runs
+  api/              HTTP surface, one module per area
+  agents/
+    engine.py       plan → work → review → rework → wrap up
+    llm.py          model client (tool calling, streaming, lenient JSON)
+    prompts.py      system prompts, including the toolbelt briefing
+    tools/          tracker, wiki, chat, workspace + registry with access checks
+  services/         crypto (sealing), identity issuing, git workspaces, activity feed
+  tests/            36 tests, no external services required
+frontend/src/
+  app/              App Router pages (company shell + 8 surfaces) and the API proxy
+  components/       dashboard, board, workspace editor, wiki, chat, org chart, live feed
+  lib/              typed API client, hooks, formatting
+scripts/            demo.py (scripted company) and smoke_test.py (stack check)
 ```
+
+## Tests
+
+```bash
+docker compose run --rm backend pytest      # or: cd backend && pytest
+cd frontend && npm run lint && npm run build
+python3 scripts/smoke_test.py               # against a running stack
+```
+
+The backend suite runs on SQLite with a stubbed model provider — no API key,
+database or Redis needed.
+
+## Configuration
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `NVIDIA_API_KEY` | — | Required for the employees to think |
+| `MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | Any OpenAI-compatible NVIDIA model with tool calling |
+| `SECRET_KEY` | `dev-insecure-key` | Seals employee credentials — change it for anything real |
+| `DATABASE_URL` | set by compose | Postgres |
+| `DATA_DIR` | `/data` | Where project git workspaces live |
+| `MAX_AGENT_STEPS` | `12` | Tool calls one employee may make per ticket |
+| `MAX_RUN_PASSES` | `2` | How often a run revisits QA-rejected tickets |
+| `RUN_CONCURRENCY` | `2` | Projects that can run at once |
+| `API_URL` (frontend) | `http://localhost:8000` | Server-side only; the browser uses `/api/backend/*` |
+
+## Not built yet
+
+- External connectors. Tools sit behind an adapter and the built-in modules
+  implement it; Jira Cloud, Confluence and GitHub adapters are not written.
+- Authentication. There are no platform users — anyone who can reach the API is
+  an admin of every company.
+- MCP authorization verifies that a bearer token is present, not that it is valid.
+- Runs execute tickets one at a time; employees do not work in parallel.

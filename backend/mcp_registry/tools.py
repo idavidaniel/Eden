@@ -1,79 +1,68 @@
-"""Tool registry exposed over MCP.
+"""Bridges the platform's built-in tools onto MCP.
 
-Each entry pairs a JSON Schema (what the model sees) with a handler (what runs).
-Handlers are deliberately side-effect-free stubs; swap them for real
-integrations as they are built.
+The same handlers the AI employees call internally are exposed over JSON-RPC, so
+an external MCP client can drive a company's tracker, wiki, chat and workspace
+using an employee's identity.
 """
 
-from collections.abc import Callable
 from typing import Any
 
-ToolHandler = Callable[[dict[str, Any]], str]
+from sqlalchemy import select
 
+from agents import tools as agent_tools
+from agents.tools.base import ToolContext
+from db import session
+from models import Company, Employee, Project
 
-def _send_email(args: dict[str, Any]) -> str:
-    to = args.get("to")
-    if not to:
-        raise ValueError("'to' is required")
-    return f"[stub] Email queued to {to} (subject: {args.get('subject', 'n/a')})."
-
-
-def _search_knowledge_base(args: dict[str, Any]) -> str:
-    from rag.retrieval import search
-
-    results = search(
-        tenant_id=args["tenant_id"],
-        kb_id=args["kb_id"],
-        query=args["query"],
-        top_k=int(args.get("top_k", 3)),
-    )
-    if not results:
-        return "No matching passages."
-    return "\n\n---\n\n".join(f"({r['score']:.2f}) {r['content']}" for r in results)
-
-
-TOOLS: dict[str, dict[str, Any]] = {
-    "send_email": {
-        "definition": {
-            "name": "send_email",
-            "description": "Send an email on behalf of the AI employee.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "to": {"type": "string", "description": "Recipient address"},
-                    "subject": {"type": "string"},
-                    "body": {"type": "string"},
-                },
-                "required": ["to", "body"],
-            },
-        },
-        "handler": _send_email,
-    },
-    "search_knowledge_base": {
-        "definition": {
-            "name": "search_knowledge_base",
-            "description": "Hybrid search over a tenant's ingested documents.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "tenant_id": {"type": "string"},
-                    "kb_id": {"type": "string"},
-                    "query": {"type": "string"},
-                    "top_k": {"type": "integer", "default": 3},
-                },
-                "required": ["tenant_id", "kb_id", "query"],
-            },
-        },
-        "handler": _search_knowledge_base,
-    },
+IDENTITY_PARAMS = {
+    "employee_id": {"type": "string", "description": "The employee acting (their platform id)"},
+    "project_id": {"type": "string", "description": "Project the action applies to, when relevant"},
 }
 
 
 def list_definitions() -> list[dict]:
-    return [tool["definition"] for tool in TOOLS.values()]
+    definitions = []
+    for tool in agent_tools.ALL_TOOLS:
+        schema = tool.schema()["function"]
+        parameters = {
+            "type": "object",
+            "properties": {**schema["parameters"].get("properties", {}), **IDENTITY_PARAMS},
+            "required": [*schema["parameters"].get("required", []), "employee_id"],
+        }
+        definitions.append(
+            {
+                "name": tool.name,
+                "description": f"[{tool.group}] {tool.description}",
+                "inputSchema": parameters,
+            }
+        )
+    return definitions
 
 
 def call(name: str, arguments: dict[str, Any]) -> str:
-    if name not in TOOLS:
-        raise KeyError(name)
-    return TOOLS[name]["handler"](arguments or {})
+    arguments = dict(arguments or {})
+    employee_id = arguments.pop("employee_id", None)
+    project_id = arguments.pop("project_id", None)
+    if not employee_id:
+        raise ValueError("employee_id is required so the action is attributed to someone.")
+
+    db = session()
+    try:
+        employee = db.get(Employee, employee_id)
+        if not employee:
+            raise ValueError(f"No employee with id {employee_id}.")
+        company = db.get(Company, employee.company_id)
+        project = db.get(Project, project_id) if project_id else None
+        if project is None and project_id is None:
+            project = db.scalar(
+                select(Project)
+                .where(Project.company_id == company.id)
+                .order_by(Project.created_at.desc())
+            )
+
+        ctx = ToolContext(db=db, company=company, employee=employee, project=project)
+        result = agent_tools.execute(name, ctx, arguments)
+        db.commit()
+        return result
+    finally:
+        db.close()

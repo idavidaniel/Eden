@@ -15,7 +15,11 @@ jobs:
           python-version: "3.11"
           cache: pip
       - run: pip install -r backend/requirements-dev.txt
-      - run: ruff check backend
+      - run: ruff check .
+        working-directory: backend
+      # The suite runs on SQLite with a stubbed model provider, but the
+      # workspace tests drive a real git repository.
+      - run: git config --global init.defaultBranch main
       - run: pytest
         working-directory: backend
 

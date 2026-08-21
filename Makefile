@@ -1,4 +1,4 @@
-.PHONY: up down logs build test test-backend lint smoke fmt
+.PHONY: up down logs build test test-backend lint smoke demo fmt
 
 up:            ## start the whole stack
 	docker compose up --build -d
@@ -12,11 +12,17 @@ logs:
 test: test-backend lint
 
 test-backend:
-	cd backend && pytest
+	docker compose run --rm backend pytest
 
 lint:
+	docker compose run --rm backend ruff check .
 	cd frontend && npm run lint
-	cd backend && ruff check .
+
+fmt:
+	docker compose run --rm backend ruff format .
 
 smoke:
 	python3 scripts/smoke_test.py
+
+demo:
+	python3 scripts/demo.py

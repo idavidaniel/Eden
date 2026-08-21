@@ -19,7 +19,7 @@ METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
 
-SERVER_INFO = {"name": "eaas-integration-registry", "version": "0.1.0"}
+SERVER_INFO = {"name": "eden-company-tools", "version": "0.2.0"}
 
 
 class JSONRPCRequest(BaseModel):
@@ -59,10 +59,10 @@ async def mcp_endpoint(req: JSONRPCRequest):
         name = req.params.get("name")
         if not name:
             return _error(req.id, INVALID_PARAMS, "Missing 'name'.")
+        if name not in {tool["name"] for tool in tools.list_definitions()}:
+            return _error(req.id, METHOD_NOT_FOUND, f"Unknown tool: {name}")
         try:
             text = tools.call(name, req.params.get("arguments", {}))
-        except KeyError:
-            return _error(req.id, METHOD_NOT_FOUND, f"Unknown tool: {name}")
         except Exception as exc:
             # Tool failures are reported in-band so the model can react to them.
             return _result(

@@ -6,8 +6,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "EaaS Control Plane",
-  description: "Assign tasks to your AI employee and watch it reason in real time.",
+  title: "Eden — AI Employees",
+  description: "Found a company, hire AI employees, and watch them deliver projects together.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

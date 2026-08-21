@@ -49,9 +49,7 @@ class MockOAuthMiddleware(BaseHTTPMiddleware):
                         "error": {"code": -32001, "message": "Unauthorized"},
                     },
                     headers={
-                        "WWW-Authenticate": (
-                            f'Bearer realm="mcp", resource_metadata="{PRM_URI}"'
-                        )
+                        "WWW-Authenticate": (f'Bearer realm="mcp", resource_metadata="{PRM_URI}"')
                     },
                 )
 
