@@ -116,3 +116,34 @@ def test_restart_releases_runs_that_were_in_flight(client, company):
         assert not db.query(Employee).filter_by(company_id=company["id"], status="working").count()
     finally:
         db.close()
+
+
+def test_outcome_note_explains_how_a_run_ended():
+    from types import SimpleNamespace
+
+    from agents.engine import _outcome_note
+
+    open_tickets = [SimpleNamespace(key="ABC-2"), SimpleNamespace(key="ABC-3")]
+    note = _outcome_note(1, open_tickets, [SimpleNamespace(key="ABC-4")], 2)
+
+    assert "1 ticket finished" in note
+    assert "2 still open (ABC-2, ABC-3)" in note
+    assert "run again" in note
+    assert "1 blocked" in note
+    assert "2 turns ran out of tool calls" in note
+
+
+def test_outcome_note_is_quiet_when_everything_landed():
+    from agents.engine import _outcome_note
+
+    assert _outcome_note(4, [], [], 0) == "4 tickets finished."
+
+
+def test_tickets_can_be_deleted(client, project):
+    ticket = client.post(f"/projects/{project['id']}/tickets", json={"title": "Junk"}).json()
+
+    assert client.delete(f"/tickets/{ticket['id']}").status_code == 204
+    assert client.get(f"/tickets/{ticket['id']}").status_code == 404
+    assert ticket["key"] not in [
+        t["key"] for t in client.get(f"/projects/{project['id']}/tickets").json()
+    ]

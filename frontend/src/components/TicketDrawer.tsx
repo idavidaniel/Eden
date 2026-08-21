@@ -34,6 +34,13 @@ export default function TicketDrawer({
     onChanged();
   };
 
+  const remove = async () => {
+    if (!ticketId || !confirm(`Delete ${data?.key}? This cannot be undone.`)) return;
+    await api.tickets.remove(ticketId);
+    onChanged();
+    onClose();
+  };
+
   const send = async () => {
     if (!ticketId || !comment.trim()) return;
     await api.tickets.comment(ticketId, comment);
@@ -80,6 +87,9 @@ export default function TicketDrawer({
                 {assignee.name}
               </span>
             )}
+            <Button size="sm" variant="danger" className="ml-auto" onClick={remove}>
+              Delete
+            </Button>
           </div>
 
           <section>
@@ -114,7 +124,11 @@ export default function TicketDrawer({
                 {data.steps.map((step) => (
                   <details key={step.id} className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
                     <summary className="cursor-pointer text-sm text-slate-300">
-                      {step.kind} · {step.tool_calls.length} tool calls · {timeAgo(step.created_at)}
+                      {step.kind} · {step.tool_calls.length} tool calls ·{" "}
+                      {timeAgo(step.created_at)}
+                      {step.status === "step_limit" && (
+                        <span className="ml-2 text-amber-400">ran out of steps</span>
+                      )}
                     </summary>
                     {step.output && (
                       <p className="mt-2 text-sm whitespace-pre-wrap text-slate-400">{step.output}</p>

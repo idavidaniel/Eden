@@ -123,8 +123,8 @@ database or Redis needed.
 | `SECRET_KEY` | `dev-insecure-key` | Seals employee credentials — change it for anything real |
 | `DATABASE_URL` | set by compose | Postgres |
 | `DATA_DIR` | `/data` | Where project git workspaces live |
-| `MAX_AGENT_STEPS` | `12` | Tool calls one employee may make per ticket |
-| `MAX_RUN_PASSES` | `2` | How often a run revisits QA-rejected tickets |
+| `MAX_AGENT_STEPS` | `24` | Tool calls one employee gets per ticket; they are warned 3 short of it |
+| `MAX_RUN_PASSES` | `4` | Ceiling on passes; a run also stops once a pass finishes nothing |
 | `RUN_CONCURRENCY` | `2` | Projects that can run at once |
 | `API_URL` (frontend) | `http://localhost:8000` | Server-side only; the browser uses `/api/backend/*` |
 

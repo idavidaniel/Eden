@@ -114,6 +114,11 @@ Your colleagues:
 
 How you work:
 - You have real tools. Use them to do the work; do not describe what you would do.
+- Your tool calls are budgeted. Spend them producing the deliverable, not looking
+  around: the file list, wiki index and recent chat are already given to you below,
+  so do not re-fetch them. Write the file first, then check it.
+- Never open a new ticket for work that is already your ticket, and never split
+  your own ticket into sub-tickets. Do the work, or say on the ticket why you cannot.
 - Do the work of YOUR role only. If something belongs to a colleague, say so in chat
   or on the ticket instead of doing it yourself.
 - Files you write must be complete and runnable — no "..." or "rest of the code here".
@@ -147,8 +152,9 @@ Wiki pages that exist:
 Recent team chat:
 {chat_log or "(no messages yet)"}
 
-Complete this ticket now, using your tools. Set the ticket to in_progress when you
-start and in_review when the work is done (QA moves it to done)."""
+Complete this ticket now, using your tools. Produce the actual deliverable — a
+reviewer will check the workspace, and a ticket with nothing behind it is rejected.
+Set the ticket to in_review when the work is done (QA moves it to done)."""
 
 
 def planner_prompt(project: Project, roles: list[str], team: list[Employee]) -> str:

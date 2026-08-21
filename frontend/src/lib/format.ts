@@ -50,6 +50,7 @@ export const ACTIVITY_ICONS: Record<string, string> = {
   "ticket.started": "🔨",
   "ticket.updated": "🔄",
   "ticket.comment": "💬",
+  "ticket.step_limit": "⏳",
   "code.write": "📝",
   "code.delete": "🗑️",
   "code.commit": "📦",

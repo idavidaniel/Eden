@@ -30,6 +30,7 @@ export default function RunPanel({
     { intervalMs: live ? 3000 : undefined },
   );
   const current = run.data ?? latest;
+  const note = typeof current?.stats?.note === "string" ? current.stats.note : "";
 
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -53,16 +54,26 @@ export default function RunPanel({
             Autonomous run
           </h2>
           {current ? (
-            <p className="mt-1 text-sm text-slate-400">
-              <StatusPill status={current.status} /> phase{" "}
-              <span className="text-slate-300">{current.phase}</span> · started {timeAgo(current.created_at)}
-              {current.stats?.tickets ? (
-                <>
-                  {" "}
-                  · {current.stats.done}/{current.stats.tickets} tickets done
-                </>
-              ) : null}
-            </p>
+            <>
+              <p className="mt-1 text-sm text-slate-400">
+                <StatusPill status={current.status} /> phase{" "}
+                <span className="text-slate-300">{current.phase}</span> · started{" "}
+                {timeAgo(current.created_at)}
+                {current.stats?.tickets ? (
+                  <>
+                    {" "}
+                    · {current.stats.done}/{current.stats.tickets} tickets done
+                  </>
+                ) : null}
+              </p>
+              {/* A finished run that left work behind should say so, rather than
+                  looking like a board that stopped moving for no reason. */}
+              {!live && note && (
+                <p className="mt-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-sm text-amber-200">
+                  {note}
+                </p>
+              )}
+            </>
           ) : (
             <p className="mt-1 text-sm text-slate-500">
               The manager will break the brief into tickets and hand them to the right people.

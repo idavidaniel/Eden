@@ -103,6 +103,7 @@ export const api = {
     get: (id: string) => request<Ticket>(`/tickets/${id}`),
     update: (id: string, body: Record<string, unknown>) => patch<Ticket>(`/tickets/${id}`, body),
     comment: (id: string, body: string) => post(`/tickets/${id}/comments`, { body }),
+    remove: (id: string) => del(`/tickets/${id}`),
   },
 
   runs: {

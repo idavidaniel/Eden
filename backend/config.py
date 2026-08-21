@@ -37,13 +37,16 @@ class Settings:
     secret_key: str = field(default_factory=lambda: os.getenv("SECRET_KEY", "dev-insecure-key"))
 
     # --- agent runtime --------------------------------------------------
-    max_agent_steps: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_STEPS", "12")))
+    # Rounds of tool calls one employee gets per ticket. Too low and they spend
+    # the budget looking around and never write anything.
+    max_agent_steps: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_STEPS", "24")))
     max_tickets_per_run: int = field(
         default_factory=lambda: int(os.getenv("MAX_TICKETS_PER_RUN", "24"))
     )
     run_concurrency: int = field(default_factory=lambda: int(os.getenv("RUN_CONCURRENCY", "2")))
-    # How many times a run revisits tickets QA sent back.
-    max_run_passes: int = field(default_factory=lambda: int(os.getenv("MAX_RUN_PASSES", "2")))
+    # Upper bound on passes over the board. A run also stops early once a pass
+    # finishes nothing, so this is a ceiling rather than a target.
+    max_run_passes: int = field(default_factory=lambda: int(os.getenv("MAX_RUN_PASSES", "4")))
 
     # --- api ------------------------------------------------------------
     cors_origins: list[str] = field(

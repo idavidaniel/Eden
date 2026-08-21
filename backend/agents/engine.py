@@ -9,7 +9,7 @@ import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from agents import prompts, tools
@@ -17,11 +17,24 @@ from agents.llm import chat, structured_call
 from agents.tools.base import ToolContext
 from config import get_settings
 from db import session
-from models import Channel, Document, Employee, Message, Project, Run, RunStep, Ticket
+from models import (
+    Channel,
+    Document,
+    Employee,
+    Message,
+    Project,
+    Run,
+    RunStep,
+    Ticket,
+    TicketComment,
+)
 from services import events, workspace
 from services.roles import ROLES, get_role, match_role
 
 log = logging.getLogger(__name__)
+
+# How many steps before the limit an employee is told to wrap up.
+WARN_BEFORE_STEPS = 3
 
 _executor: ThreadPoolExecutor | None = None
 _lock = threading.Lock()
@@ -131,8 +144,23 @@ def run_agent_turn(
     reasoning_parts: list[str] = []
     calls_made: list[dict] = []
     final_text = ""
+    hit_limit = False
 
-    for _ in range(max_steps):
+    for index in range(max_steps):
+        # Warn before the budget runs out so the turn lands instead of being cut
+        # off mid-thought.
+        if index == max_steps - WARN_BEFORE_STEPS:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"You have {WARN_BEFORE_STEPS} tool calls left. Finish now: save "
+                        "your work, commit it if you changed files, update the ticket, "
+                        "then reply with what you did."
+                    ),
+                }
+            )
+
         reply = chat(messages, tools=schemas)
         if reply.reasoning:
             reasoning_parts.append(reply.reasoning)
@@ -165,12 +193,16 @@ def run_agent_turn(
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": result[:4000]})
             log.info("%s -> %s", call["name"], result[:120])
     else:
-        final_text = "Stopped after reaching the step limit for this task."
+        hit_limit = True
+        final_text = (
+            f"Ran out of tool calls ({max_steps}) before finishing this task. "
+            "Raise MAX_AGENT_STEPS or split the ticket into smaller pieces."
+        )
 
     step.reasoning = "\n\n".join(reasoning_parts)[:20000]
     step.output = final_text[:8000]
     step.tool_calls = calls_made
-    step.status = "done"
+    step.status = "step_limit" if hit_limit else "done"
     if ctx.run:
         db.add(step)
         db.commit()
@@ -305,6 +337,28 @@ def work_ticket(db: Session, run: Run, project: Project, ticket: Ticket, company
     )
     step = run_agent_turn(db, ctx, task_prompt, kind="work")
 
+    if step.status == "step_limit":
+        db.add(
+            TicketComment(
+                ticket_id=ticket.id,
+                author_id=employee.id,
+                author_label=f"{employee.name} ({employee.title})",
+                body=step.output,
+            )
+        )
+        events.record(
+            db,
+            company_id=company.id,
+            project_id=project.id,
+            run_id=run.id,
+            employee_id=employee.id,
+            actor=f"{employee.name} ({employee.title})",
+            kind="ticket.step_limit",
+            summary=f"ran out of tool calls on {ticket.key}",
+            payload={"ticket_id": ticket.id, "key": ticket.key},
+        )
+        db.commit()
+
     _autocommit(db, run, project, ticket, employee, company)
 
     db.refresh(ticket)
@@ -427,6 +481,33 @@ def _pending_tickets(db: Session, project_id: str) -> list[Ticket]:
     )
 
 
+def _count_done(db: Session, project_id: str) -> int:
+    return (
+        db.scalar(
+            select(func.count())
+            .select_from(Ticket)
+            .where(Ticket.project_id == project_id, Ticket.status == "done")
+        )
+        or 0
+    )
+
+
+def _outcome_note(done: int, unfinished: list, blocked: list, truncated: int) -> str:
+    """One sentence the dashboard can show about how the run ended."""
+    parts = [f"{done} ticket{'s' if done != 1 else ''} finished"]
+    if unfinished:
+        keys = ", ".join(t.key for t in unfinished[:4])
+        parts.append(f"{len(unfinished)} still open ({keys}) - run again to continue them")
+    if blocked:
+        parts.append(f"{len(blocked)} blocked, needs you")
+    if truncated:
+        parts.append(
+            f"{truncated} turn{'s' if truncated != 1 else ''} ran out of tool calls "
+            "(raise MAX_AGENT_STEPS or use smaller tickets)"
+        )
+    return "; ".join(parts) + "."
+
+
 def _cancelled(db: Session, run_id: str) -> bool:
     status = db.scalar(select(Run.status).where(Run.id == run_id))
     return status in {"cancelling", "cancelled"}
@@ -486,11 +567,14 @@ def execute_run(run_id: str) -> None:
 
         # Several passes: work rejected by QA comes back as `todo`, and the
         # person who owns it deserves the review comments before the run ends.
+        # A pass that finishes nothing ends the run - another identical pass
+        # would only burn tokens.
         for cycle in range(get_settings().max_run_passes):
             pending = _pending_tickets(db, project.id)
             if not pending or stopped:
                 break
             if cycle:
+                done_before = _count_done(db, project.id)
                 log.info("rework pass %s: %s tickets", cycle, len(pending))
 
             for ticket in pending:
@@ -510,6 +594,10 @@ def execute_run(run_id: str) -> None:
                             break
                         review_ticket(db, run, project, ticket, company, reviewer)
 
+            if cycle and _count_done(db, project.id) == done_before:
+                log.info("pass %s finished nothing new - ending the run", cycle)
+                break
+
         if _cancelled(db, run_id):
             run.status, run.phase = "cancelled", "cancelled"
         else:
@@ -520,10 +608,21 @@ def execute_run(run_id: str) -> None:
             run.status, run.phase = "completed", "done"
 
         finished = list(db.scalars(select(Ticket).where(Ticket.project_id == project.id)))
+        done = [t for t in finished if t.status == "done"]
+        unfinished = [t for t in finished if t.status in PENDING_STATUSES]
+        blocked = [t for t in finished if t.status == "blocked"]
+        truncated = db.scalar(
+            select(func.count())
+            .select_from(RunStep)
+            .where(RunStep.run_id == run.id, RunStep.status == "step_limit")
+        )
         run.stats = {
             "tickets": len(finished),
-            "done": len([t for t in finished if t.status == "done"]),
-            "blocked": len([t for t in finished if t.status == "blocked"]),
+            "done": len(done),
+            "blocked": len(blocked),
+            "unfinished": len(unfinished),
+            "step_limited": truncated or 0,
+            "note": _outcome_note(len(done), unfinished, blocked, truncated or 0),
         }
         db.add(run)
         events.record(

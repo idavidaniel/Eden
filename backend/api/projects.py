@@ -238,6 +238,24 @@ def update_ticket(ticket_id: str, payload: TicketPatch, db: Session = Depends(ge
     return serializers.ticket(ticket)
 
 
+@router.delete("/tickets/{ticket_id}", status_code=204)
+def delete_ticket(ticket_id: str, db: Session = Depends(get_db)):
+    ticket = db.get(Ticket, ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found.")
+    events.record(
+        db,
+        company_id=ticket.project.company_id,
+        project_id=ticket.project_id,
+        actor="You",
+        kind="ticket.deleted",
+        summary=f"deleted {ticket.key}: {ticket.title}",
+        payload={"key": ticket.key},
+    )
+    db.delete(ticket)
+    db.commit()
+
+
 @router.post("/tickets/{ticket_id}/comments", status_code=201)
 def comment_ticket(ticket_id: str, payload: CommentIn, db: Session = Depends(get_db)):
     ticket = db.get(Ticket, ticket_id)

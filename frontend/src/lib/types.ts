@@ -114,7 +114,8 @@ export type Run = {
   status: string;
   phase: string;
   error: string | null;
-  stats: Record<string, number>;
+  /** Counts plus a `note` string summarising how the run ended. */
+  stats: Record<string, number | string>;
   created_at: string;
   steps?: RunStep[];
 };

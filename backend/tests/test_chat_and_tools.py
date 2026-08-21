@@ -132,3 +132,20 @@ def test_prompt_tells_an_employee_what_they_cannot_reach(client, company):
     assert "You do NOT have: workspace" in prompt
     assert "cannot write code" in prompt
     assert company["name"] in prompt
+
+
+def test_employees_are_told_not_to_split_their_own_ticket(client, company):
+    from agents.prompts import employee_system_prompt
+    from db import session
+    from models import Company
+
+    db = session()
+    try:
+        company_row = db.get(Company, company["id"])
+        engineer = next(e for e in company_row.employees if e.role_key == "backend_engineer")
+        prompt = employee_system_prompt(company_row, engineer, list(company_row.employees), None)
+    finally:
+        db.close()
+
+    assert "never split" in prompt
+    assert "do not re-fetch" in prompt
