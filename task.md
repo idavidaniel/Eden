@@ -20,7 +20,15 @@
 - [x] MCP bridge exposing the same tools over JSON-RPC 2.0
 - [x] 36 backend tests (SQLite + stubbed model), lint and CI
 
+- [x] Flutter and Dart in the workspace image, so employees can scaffold,
+      analyse and test real Flutter apps
+- [x] Verification gate: a project command the platform runs itself; a failing
+      build reopens the ticket regardless of what the employee reported
+- [x] Web preview: build a Flutter package for the web and serve it from the board
+
 ## Next
+
+- [ ] Android SDK in the image so `flutter build apk` produces an installable app
 
 - [ ] Connectors: Jira Cloud, Confluence and GitHub adapters behind the existing
       tool interface, configured per company in Settings

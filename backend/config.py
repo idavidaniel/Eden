@@ -39,7 +39,7 @@ class Settings:
     # --- agent runtime --------------------------------------------------
     # Rounds of tool calls one employee gets per ticket. Too low and they spend
     # the budget looking around and never write anything.
-    max_agent_steps: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_STEPS", "24")))
+    max_agent_steps: int = field(default_factory=lambda: int(os.getenv("MAX_AGENT_STEPS", "32")))
     max_tickets_per_run: int = field(
         default_factory=lambda: int(os.getenv("MAX_TICKETS_PER_RUN", "24"))
     )

@@ -25,6 +25,16 @@ class ProjectIn(BaseModel):
     lead_id: str | None = None
 
 
+class ProjectPatch(BaseModel):
+    name: str | None = None
+    brief: str | None = None
+    status: str | None = None
+    lead_id: str | None = None
+    # Shell-free command the platform runs to decide whether work is done,
+    # e.g. "flutter test" or "python3 -m pytest -q".
+    verify_command: str | None = None
+
+
 class TicketIn(BaseModel):
     title: str
     description: str = ""
@@ -147,6 +157,34 @@ def read_project(project_id: str, db: Session = Depends(get_db)):
         **serializers.project(project, project_counts(db, project.id)),
         "runs": [serializers.run(run) for run in runs],
     }
+
+
+@router.patch("/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectPatch, db: Session = Depends(get_db)):
+    project = get_project(db, project_id)
+    changes = payload.model_dump(exclude_unset=True)
+
+    command = changes.get("verify_command")
+    if command:
+        # Fail early rather than at the end of someone's turn.
+        try:
+            workspace.check_command(command)
+        except workspace.WorkspaceError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    for key, value in changes.items():
+        setattr(project, key, value)
+    db.add(project)
+    events.record(
+        db,
+        company_id=project.company_id,
+        project_id=project.id,
+        actor="You",
+        kind="project.updated",
+        summary=f"updated {project.name}: {', '.join(changes) or 'no change'}",
+    )
+    db.commit()
+    return serializers.project(project, project_counts(db, project.id))
 
 
 @router.get("/projects/{project_id}/tickets")

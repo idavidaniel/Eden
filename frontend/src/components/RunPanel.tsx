@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { useResource } from "@/lib/hooks";
 import type { ProjectDetail, Run } from "@/lib/types";
-import { Button, Card, ErrorNote, Textarea } from "./ui";
+import { Button, Card, ErrorNote, Input, Textarea } from "./ui";
 
 const LIVE = new Set(["queued", "running", "paused"]);
 
@@ -18,6 +18,7 @@ export default function RunPanel({
   onChanged: () => void;
 }) {
   const [brief, setBrief] = useState(project.brief);
+  const [verify, setVerify] = useState(project.verify_command ?? "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -31,6 +32,9 @@ export default function RunPanel({
   );
   const current = run.data ?? latest;
   const note = typeof current?.stats?.note === "string" ? current.stats.note : "";
+
+  const saveVerify = () =>
+    act(() => api.projects.update(project.id, { verify_command: verify || null }));
 
   const act = async (action: () => Promise<unknown>) => {
     setBusy(true);
@@ -117,16 +121,38 @@ export default function RunPanel({
       </div>
 
       {!live && (
-        <div className="mt-4">
+        <div className="mt-4 space-y-3">
           <Textarea
             rows={3}
             value={brief}
             onChange={(event) => setBrief(event.target.value)}
             placeholder="What should the team build?"
           />
-          <p className="mt-1 text-xs text-slate-600">
+          <p className="text-xs text-slate-600">
             Edited briefs are saved with the next run. Existing to-do tickets are worked first.
           </p>
+
+          <div>
+            <label className="mb-1 block text-xs tracking-wide text-slate-500 uppercase">
+              Verification command
+            </label>
+            <div className="flex gap-2">
+              <Input
+                value={verify}
+                onChange={(event) => setVerify(event.target.value)}
+                placeholder="e.g. flutter test · dart analyze . · python3 -m pytest -q"
+                className="font-mono text-xs"
+              />
+              <Button size="sm" variant="subtle" disabled={busy} onClick={saveVerify}>
+                Save
+              </Button>
+            </div>
+            <p className="mt-1 text-xs text-slate-600">
+              The platform runs this itself after every ticket. If it fails, the ticket is
+              reopened — whatever the employee or QA claims. Runs at the workspace root, no
+              shell.
+            </p>
+          </div>
         </div>
       )}
 

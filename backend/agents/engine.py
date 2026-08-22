@@ -367,6 +367,15 @@ def work_ticket(db: Session, run: Run, project: Project, ticket: Ticket, company
     if not ticket.result:
         ticket.result = step.output[:2000]
     db.add(ticket)
+    db.commit()
+
+    verdict = verify_project(db, run, project, ticket, company)
+    if verdict and verdict["exit_code"] != 0:
+        db.refresh(ticket)
+        ticket.status = "todo"  # the build disagrees with the employee
+        db.add(ticket)
+        db.commit()
+
     _set_status(db, employee, "idle")
     db.commit()
 
@@ -404,6 +413,41 @@ def _autocommit(db: Session, run: Run, project: Project, ticket: Ticket, employe
         db.commit()
 
 
+def verify_project(db: Session, run: Run, project: Project, ticket: Ticket, company) -> dict | None:
+    """Run the project's verification command and attach the verdict to the ticket.
+
+    This is the platform checking, not an employee reporting. Agents mark their
+    own work done far too readily - the mobile app in one run was closed while
+    `flutter pub get` could not even resolve its dependencies.
+    """
+    if not project.verify_command:
+        return None
+
+    space = workspace.for_project(company.slug, project.key)
+    try:
+        result = space.run(project.verify_command)
+    except Exception as exc:
+        result = {"command": project.verify_command, "exit_code": 1, "output": str(exc)}
+
+    passed = result["exit_code"] == 0
+    verdict = "passed" if passed else f"FAILED (exit {result['exit_code']})"
+    body = f"Verification `{result['command']}` {verdict}:\n\n{result['output'][-1500:]}"
+
+    db.add(TicketComment(ticket_id=ticket.id, author_label="Verification", body=body))
+    events.record(
+        db,
+        company_id=company.id,
+        project_id=project.id,
+        run_id=run.id,
+        kind="code.verify",
+        actor="Verification",
+        summary=f"{ticket.key}: `{project.verify_command}` → exit {result['exit_code']}",
+        payload={"ticket_id": ticket.id, "key": ticket.key, "exit_code": result["exit_code"]},
+    )
+    db.commit()
+    return result
+
+
 def review_ticket(
     db: Session, run: Run, project: Project, ticket: Ticket, company, reviewer: Employee
 ) -> None:
@@ -429,6 +473,26 @@ def review_ticket(
     if ticket.status == "in_review":  # reviewer did not decide - accept it
         ticket.status = "done"
         db.add(ticket)
+    db.commit()
+
+    if ticket.status == "done":
+        verdict = verify_project(db, run, project, ticket, company)
+        if verdict and verdict["exit_code"] != 0:
+            db.refresh(ticket)
+            ticket.status = "todo"
+            db.add(ticket)
+            events.record(
+                db,
+                company_id=company.id,
+                project_id=project.id,
+                run_id=run.id,
+                kind="ticket.updated",
+                actor="Verification",
+                summary=f"reopened {ticket.key}: verification failed",
+                payload={"ticket_id": ticket.id, "key": ticket.key},
+            )
+            db.commit()
+
     _set_status(db, reviewer, "idle")
     db.commit()
 

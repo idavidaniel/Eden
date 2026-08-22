@@ -43,6 +43,7 @@ services:
     volumes:
       - ./backend:/app             # hot reload during development
       - workspace_data:/data       # project git repositories
+      - pub_cache:/opt/pub-cache   # Dart/Flutter packages, so pub get is not re-run cold
     depends_on:
       db:
         condition: service_healthy
@@ -68,3 +69,4 @@ services:
 volumes:
   postgres_data:
   workspace_data:
+  pub_cache:

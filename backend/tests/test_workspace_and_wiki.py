@@ -142,3 +142,134 @@ def test_work_is_committed_for_the_employee(client, company, project):
     commits = client.get(f"/projects/{project['id']}/commits").json()
     assert commits[0]["subject"] == f"{ticket['key']}: Add a module"
     assert commits[0]["author"] == engineer.name
+
+
+def test_slow_toolchains_get_a_longer_timeout():
+    from services.workspace import DEFAULT_TIMEOUT, SLOW_COMMANDS, SLOW_TIMEOUT
+
+    assert {"flutter", "dart"} == SLOW_COMMANDS
+    assert SLOW_TIMEOUT > DEFAULT_TIMEOUT
+
+
+def test_flutter_and_dart_are_runnable_but_arbitrary_binaries_are_not(client, project):
+    from agents import tools
+    from agents.tools.base import ToolContext
+    from db import session
+    from models import Company, Project
+
+    db = session()
+    try:
+        project_row = db.get(Project, project["id"])
+        company_row = db.get(Company, project_row.company_id)
+        engineer = next(e for e in company_row.employees if e.role_key == "backend_engineer")
+        ctx = ToolContext(db=db, company=company_row, employee=engineer, project=project_row)
+
+        # `flutter` is allowed through the guard; whether the SDK is installed in
+        # this environment is a separate question, so only the refusal is asserted.
+        refused = tools.execute("run_command", ctx, {"command": "apt-get install cowsay"})
+        described = tools.BY_NAME["run_command"].description
+        db.rollback()
+    finally:
+        db.close()
+
+    assert "not allowed" in refused
+    assert "flutter" in described and "dart" in described
+
+
+def test_build_output_is_kept_out_of_the_tree(client, project):
+    from db import session
+    from models import Project
+    from services import workspace
+
+    db = session()
+    try:
+        project_row = db.get(Project, project["id"])
+        space = workspace.for_project(project_row.company.slug, project_row.key)
+    finally:
+        db.close()
+
+    (space.root / ".dart_tool").mkdir(exist_ok=True)
+    (space.root / ".dart_tool" / "package_config.json").write_text("{}")
+    (space.root / "build").mkdir(exist_ok=True)
+    (space.root / "build" / "app.out").write_text("binary")
+
+    paths = [entry["path"] for entry in space.tree()]
+    assert not any(path.startswith((".dart_tool", "build")) for path in paths)
+
+
+def test_commands_can_run_in_a_subdirectory(client, project):
+    """Monorepos keep each package in its own directory; without cwd a
+    per-package command like `flutter pub get` has nothing to resolve."""
+    from agents import tools
+    from agents.tools.base import ToolContext
+    from db import session
+    from models import Company, Project
+
+    client.put(
+        f"/projects/{project['id']}/file",
+        json={"path": "packages/app/whoami.py", "content": "import os; print(os.getcwd())\n"},
+    )
+
+    db = session()
+    try:
+        project_row = db.get(Project, project["id"])
+        company_row = db.get(Company, project_row.company_id)
+        engineer = next(e for e in company_row.employees if e.role_key == "backend_engineer")
+        ctx = ToolContext(db=db, company=company_row, employee=engineer, project=project_row)
+
+        inside = tools.execute(
+            "run_command", ctx, {"command": "python3 whoami.py", "cwd": "packages/app"}
+        )
+        escaping = tools.execute("run_command", ctx, {"command": "ls", "cwd": "../../etc"})
+        missing = tools.execute("run_command", ctx, {"command": "ls", "cwd": "nope"})
+        db.rollback()
+    finally:
+        db.close()
+
+    assert inside.rstrip().endswith("packages/app\n[succeeded]") or "packages/app" in inside
+    assert "escapes the workspace" in escaping
+    assert "No such directory" in missing
+
+
+def test_flutter_packages_are_discovered_and_build_dirs_ignored(client, project):
+    from db import session
+    from models import Project
+    from services import preview, workspace
+
+    db = session()
+    try:
+        project_row = db.get(Project, project["id"])
+        space = workspace.for_project(project_row.company.slug, project_row.key)
+    finally:
+        db.close()
+
+    (space.root / "mobile").mkdir(exist_ok=True)
+    (space.root / "mobile" / "pubspec.yaml").write_text("name: mobile\n")
+    (space.root / "desktop").mkdir(exist_ok=True)
+    (space.root / "desktop" / "pubspec.yaml").write_text("name: desktop\n")
+    # Copies inside build output must not be offered as previewable packages.
+    (space.root / "mobile" / "build" / "web").mkdir(parents=True, exist_ok=True)
+    (space.root / "mobile" / "build" / "pubspec.yaml").write_text("name: junk\n")
+
+    assert preview.flutter_packages(space) == ["desktop", "mobile"]
+
+
+def test_preview_endpoints_validate_the_package(client, project):
+    assert client.get(f"/projects/{project['id']}/preview").json()["status"] == "none"
+
+    missing = client.post(f"/projects/{project['id']}/preview", json={"package": "nope"})
+    assert missing.status_code == 400
+    assert "pubspec.yaml" in missing.json()["detail"]
+
+    packages = client.get(f"/projects/{project['id']}/packages").json()["packages"]
+    assert isinstance(packages, list)
+
+
+def test_preview_base_href_is_proxy_relative():
+    from services.preview import base_href, slug
+
+    assert base_href("acme", "TELEPR", "teleprompter_mobile") == (
+        "/api/backend/preview/acme/telepr/teleprompter_mobile/"
+    )
+    assert slug(".") == "root"
+    assert slug("apps/mobile") == "apps-mobile"

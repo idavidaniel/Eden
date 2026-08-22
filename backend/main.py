@@ -5,12 +5,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from api import chat, companies, employees, projects, wiki, workspace
+from api import chat, companies, employees, preview, projects, wiki, workspace
 from config import get_settings
 from db import init_db
 from mcp_registry.auth import MockOAuthMiddleware
 from mcp_registry.server import router as mcp_router
+from services import preview as preview_service
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -76,12 +78,19 @@ for router in (
     companies.router,
     employees.router,
     projects.router,
+    preview.router,
     wiki.router,
     chat.router,
     workspace.router,
 ):
     app.include_router(router)
 app.include_router(mcp_router)
+
+# Built web previews are served straight from disk, so a finished app can be
+# opened in the browser from the dashboard.
+_previews = preview_service.previews_root()
+_previews.mkdir(parents=True, exist_ok=True)
+app.mount("/preview", StaticFiles(directory=str(_previews), html=True), name="preview")
 
 
 @app.get("/health", tags=["ops"])

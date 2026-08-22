@@ -149,3 +149,6 @@ def test_employees_are_told_not_to_split_their_own_ticket(client, company):
 
     assert "never split" in prompt
     assert "do not re-fetch" in prompt
+    # Engineers are told which toolchains the sandbox actually has.
+    assert "The workspace can run:" in prompt
+    assert "flutter" in prompt

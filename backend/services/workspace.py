@@ -12,34 +12,14 @@ from pathlib import Path
 
 from config import get_settings
 
-TEXT_SUFFIXES = {
-    ".py",
-    ".js",
-    ".jsx",
-    ".ts",
-    ".tsx",
-    ".json",
-    ".md",
-    ".txt",
-    ".yml",
-    ".yaml",
-    ".toml",
-    ".ini",
-    ".cfg",
-    ".html",
-    ".css",
-    ".scss",
-    ".sql",
-    ".sh",
-    ".env",
-    ".gitignore",
-    ".dockerfile",
-    "",
-}
 MAX_FILE_BYTES = 400_000
 MAX_OUTPUT_CHARS = 6000
-# Interpreters and inspection tools an employee may start. Anything that installs
-# packages, reaches the network or touches the host is deliberately absent.
+DEFAULT_TIMEOUT = 60
+# Toolchains that legitimately take minutes (pub get, analysis, widget tests).
+SLOW_TIMEOUT = 420
+SLOW_COMMANDS = {"flutter", "dart"}
+# Programs an employee may start. Anything that touches the host or the wider
+# system is deliberately absent.
 ALLOWED_COMMANDS = {
     "python",
     "python3",
@@ -47,6 +27,8 @@ ALLOWED_COMMANDS = {
     "node",
     "ruff",
     "mypy",
+    "flutter",
+    "dart",
     "ls",
     "cat",
     "head",
@@ -68,6 +50,10 @@ IGNORED_DIRS = {
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",
+    ".dart_tool",
+    "build",
+    ".gradle",
+    "Pods",
 }
 DEFAULT_GITIGNORE = """__pycache__/
 *.py[cod]
@@ -78,6 +64,10 @@ DEFAULT_GITIGNORE = """__pycache__/
 node_modules/
 dist/
 .next/
+.dart_tool/
+build/
+.gradle/
+*.iml
 """
 
 
@@ -205,48 +195,65 @@ class Workspace:
         return self.git("show", "--stat", "--patch", sha)
 
     # --- running -------------------------------------------------------
-    def run(self, command: str, timeout: int = 60) -> dict:
+    def run(self, command: str, timeout: int | None = None, cwd: str = "") -> dict:
         """Run an allow-listed command inside the workspace.
 
         No shell: the command is tokenised and executed directly, so there is no
-        redirection, piping or chaining, and only the interpreters and inspection
-        tools below can be started at all.
+        redirection, piping or chaining, and only the allow-listed programs can be
+        started at all. `cwd` picks a subdirectory - monorepos put each package in
+        one, and without it `flutter pub get` has nothing to resolve.
         """
-        for character in ("|", ">", "<", "&", ";", "`", "$("):
-            if character in command:
-                raise WorkspaceError(
-                    f"'{character}' is not available - commands run without a shell."
-                )
+        argv, program = check_command(command)
+        working_dir = self.resolve(cwd) if cwd else self.root
+        if not working_dir.is_dir():
+            raise WorkspaceError(f"No such directory: {cwd}")
+
+        if timeout is None:
+            timeout = SLOW_TIMEOUT if program in SLOW_COMMANDS else DEFAULT_TIMEOUT
 
         try:
-            argv = shlex.split(command)
-        except ValueError as exc:
-            raise WorkspaceError(f"Could not parse the command: {exc}") from exc
-        if not argv:
-            raise WorkspaceError("Empty command.")
-
-        program = Path(argv[0]).name
-        if program not in ALLOWED_COMMANDS:
-            raise WorkspaceError(
-                f"'{program}' is not allowed here. Allowed: {', '.join(sorted(ALLOWED_COMMANDS))}"
+            result = subprocess.run(
+                argv,
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
             )
+        except subprocess.TimeoutExpired:
+            raise WorkspaceError(
+                f"'{program}' did not finish within {timeout}s and was stopped."
+            ) from None
 
-        result = subprocess.run(
-            argv,
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
         output = (result.stdout + result.stderr).strip()
         return {
-            "command": command,
+            "command": f"{command} (in {cwd})" if cwd else command,
             "exit_code": result.returncode,
             "output": output[-MAX_OUTPUT_CHARS:] or "(no output)",
             "truncated": len(output) > MAX_OUTPUT_CHARS,
         }
+
+
+def check_command(command: str) -> tuple[list[str], str]:
+    """Validate a command against the sandbox rules. Returns (argv, program)."""
+    for character in ("|", ">", "<", "&", ";", "`", "$("):
+        if character in command:
+            raise WorkspaceError(f"'{character}' is not available - commands run without a shell.")
+
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise WorkspaceError(f"Could not parse the command: {exc}") from exc
+    if not argv:
+        raise WorkspaceError("Empty command.")
+
+    program = Path(argv[0]).name
+    if program not in ALLOWED_COMMANDS:
+        raise WorkspaceError(
+            f"'{program}' is not allowed here. Allowed: {', '.join(sorted(ALLOWED_COMMANDS))}"
+        )
+    return argv, program
 
 
 def for_project(company_slug: str, project_key: str) -> Workspace:

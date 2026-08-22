@@ -68,6 +68,8 @@ def project(row: Project, counts: dict | None = None) -> dict:
         "brief": row.brief,
         "status": row.status,
         "lead_id": row.lead_id,
+        "verify_command": row.verify_command,
+        "preview": row.preview or {},
         "created_at": iso(row.created_at),
         "counts": counts or {},
     }

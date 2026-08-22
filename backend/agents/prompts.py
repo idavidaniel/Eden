@@ -70,6 +70,17 @@ def toolbelt_briefing(employee: Employee) -> str:
     missing = [tool for tool in TOOL_DESCRIPTIONS if tool not in belt]
 
     briefing = f"Tools you have access to:\n{have or '- none'}"
+    if "workspace" in belt:
+        from services.workspace import ALLOWED_COMMANDS
+
+        briefing += (
+            "\n\nThe workspace can run: "
+            + ", ".join(sorted(ALLOWED_COMMANDS))
+            + ".\nUse run_command to prove your work: scaffold with the real toolchain"
+            " (for example `flutter create .` for a Flutter app), then analyse and"
+            " test it before you hand the ticket over. Do not mark work finished"
+            " that you have not run."
+        )
     if missing:
         names = ", ".join(missing)
         briefing += (
@@ -135,6 +146,13 @@ def ticket_prompt(
     ticket: Ticket, project: Project, chat_log: str, wiki_index: str, file_list: str
 ) -> str:
     criteria = "\n".join(f"- {c}" for c in ticket.acceptance_criteria or []) or "- (none stated)"
+    verification = (
+        f"The platform runs `{project.verify_command}` after your turn. If it fails,\n"
+        "this ticket is reopened no matter what you or QA say — so run it yourself\n"
+        "with run_command and fix what it reports before you finish.\n"
+        if project.verify_command
+        else ""
+    )
     return f"""Your assigned ticket:
 
 {ticket.key} [{ticket.type}, priority {ticket.priority}]
@@ -154,7 +172,7 @@ Recent team chat:
 
 Complete this ticket now, using your tools. Produce the actual deliverable — a
 reviewer will check the workspace, and a ticket with nothing behind it is rejected.
-Set the ticket to in_review when the work is done (QA moves it to done)."""
+{verification}Set the ticket to in_review when the work is done (QA moves it to done)."""
 
 
 def planner_prompt(project: Project, roles: list[str], team: list[Employee]) -> str:

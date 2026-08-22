@@ -63,11 +63,22 @@ export type Project = {
   brief: string;
   status: string;
   lead_id: string | null;
+  /** Command the platform runs to decide whether work is really done. */
+  verify_command: string | null;
+  preview: PreviewState;
   created_at: string;
   counts: Record<string, number>;
 };
 
 export type ProjectDetail = Project & { runs: Run[] };
+
+export type PreviewState = {
+  status?: "none" | "building" | "ready" | "failed";
+  package?: string;
+  url?: string;
+  built_at?: string;
+  error?: string | null;
+};
 
 export type Ticket = {
   id: string;

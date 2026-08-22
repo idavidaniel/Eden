@@ -64,11 +64,11 @@ def delete_file(ctx: ToolContext, path: str) -> str:
     return f"Deleted {path}."
 
 
-def run_command(ctx: ToolContext, command: str) -> str:
+def run_command(ctx: ToolContext, command: str, cwd: str = "") -> str:
     """Run a test or script inside the workspace and return what it printed."""
     space = _workspace(ctx)
     try:
-        result = space.run(command)
+        result = space.run(command, cwd=cwd)
     except Exception as exc:
         return f"Could not run it: {exc}"
 
@@ -156,12 +156,23 @@ TOOLS = [
         name="run_command",
         group="workspace",
         description=(
-            "Run a command in the workspace to check your work, e.g. "
-            "'pytest -q', 'python3 main.py --help'. No shell features (no pipes "
-            "or redirection); allowed programs: python3, pytest, node, ruff, ls, "
-            "cat, grep, find, git."
+            "Run a command in the workspace to check your work, e.g. 'pytest -q', "
+            "'flutter analyze', 'flutter test', 'python3 main.py --help'. No shell "
+            "features (no pipes, redirection or chaining). Allowed programs: "
+            + ", ".join(sorted(workspace.ALLOWED_COMMANDS))
+            + "."
         ),
-        parameters=obj({"command": string("The command line to run")}),
+        parameters=obj(
+            {
+                "command": string("The command line to run"),
+                "cwd": string(
+                    "Subdirectory to run it in, relative to the workspace root. "
+                    "Required for per-package commands, e.g. cwd='teleprompter_mobile' "
+                    "with command='flutter pub get'."
+                ),
+            },
+            required=["command"],
+        ),
         handler=run_command,
     ),
     Tool(

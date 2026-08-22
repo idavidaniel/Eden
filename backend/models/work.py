@@ -21,6 +21,11 @@ class Project(Base, IdMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(30), default="planning")
     lead_id: Mapped[str | None] = mapped_column(ForeignKey("employees.id", ondelete="SET NULL"))
     repo_path: Mapped[str | None] = mapped_column(String(255))
+    # Command the platform runs to decide whether work is actually done.
+    # Agents cannot mark a ticket done while this fails.
+    verify_command: Mapped[str | None] = mapped_column(String(255))
+    # Last web preview: {status, package, url, built_at, error}.
+    preview: Mapped[dict] = mapped_column(JSON, default=dict)
     ticket_counter: Mapped[int] = mapped_column(Integer, default=0)
 
     company: Mapped["Company"] = relationship(back_populates="projects")  # noqa: F821

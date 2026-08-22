@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { STATUS_LABELS, STATUS_TONES } from "@/lib/format";
 import { useResource } from "@/lib/hooks";
 import type { Employee, ProjectDetail, Ticket, TicketStatus } from "@/lib/types";
+import PreviewPanel from "./PreviewPanel";
 import RunPanel from "./RunPanel";
 import TicketDrawer from "./TicketDrawer";
 import { Avatar, Badge, Button, Card, EmptyState, ErrorNote, Field, Input, Modal, Spinner, Textarea } from "./ui";
@@ -83,6 +84,8 @@ export default function ProjectBoard({
           tickets.reload();
         }}
       />
+
+      <PreviewPanel projectId={projectId} />
 
       {blocked.length > 0 && (
         <Card className="border-rose-500/30 bg-rose-500/5 p-4">

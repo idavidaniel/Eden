@@ -3,7 +3,7 @@
 from collections.abc import Iterator
 from functools import lru_cache
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import get_settings
@@ -48,10 +48,28 @@ def get_db() -> Iterator[Session]:
         db.close()
 
 
+# Columns added after a table first shipped. `create_all` only creates missing
+# tables, so these are applied by hand. Small enough not to need Alembic yet.
+ADDED_COLUMNS: list[tuple[str, str, str]] = [
+    ("projects", "verify_command", "VARCHAR(255)"),
+    ("projects", "preview", "JSONB"),
+]
+
+
 def init_db() -> None:
-    """Create the extension and all tables. Safe to call repeatedly."""
+    """Create all tables and apply column additions. Safe to call repeatedly."""
     import models  # noqa: F401  (registers every mapper)
     from models.base import Base
 
     engine = get_engine()
     Base.metadata.create_all(engine)
+
+    inspector = inspect(engine)
+    with engine.connect() as conn:
+        for table, column, ddl_type in ADDED_COLUMNS:
+            if table not in inspector.get_table_names():
+                continue
+            existing = {col["name"] for col in inspector.get_columns(table)}
+            if column not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+        conn.commit()

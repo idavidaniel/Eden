@@ -34,6 +34,8 @@ in chat — while you watch it happen live and interrupt when you want to.
 | **Chat** | Channels shared with the agents. Mention someone (`@Ada`) and they pick it up, use their tools, and reply. |
 | **Live feed** | Every tool call, commit, status change and message, streamed to the dashboard over SSE. |
 | **Runs** | Start, pause, resume or stop an autonomous run. QA-rejected work comes back for a rework pass. |
+| **Verification gate** | A per-project command (`dart analyze .`, `flutter test`, `pytest -q`) that the *platform* runs after every ticket. Fails → the ticket reopens, whatever the employee or QA claimed. |
+| **Live preview** | Builds a Flutter package for the web and serves it, so a finished app can be opened from the board. The container has no screen, so web is the honest route. |
 | **MCP** | The same tool registry exposed over JSON-RPC 2.0, so external clients can act as an employee. |
 
 ## Quick start
@@ -75,7 +77,10 @@ You can pause or stop between any two steps; the run checks before each one.
   registry, and their prompt tells them what they cannot reach and who to ask.
 - **Commands are sandboxed.** `run_command` has no shell — no pipes, redirection
   or chaining — and only allows interpreters and inspection tools
-  (`python3`, `pytest`, `node`, `ruff`, `ls`, `cat`, `grep`, `find`, `git`, …).
+  (`python3`, `pytest`, `node`, `flutter`, `dart`, `ruff`, `ls`, `cat`, `grep`,
+  `find`, `git`, …). A `cwd` argument scopes it to one package in a monorepo.
+- **Claims are checked by the platform, not the agent.** Set a project's
+  verification command and no ticket closes while it fails.
 - **Workspaces are contained.** Every path is resolved and rejected if it escapes
   the project root.
 - **Restarts are survivable.** Runs interrupted by a restart are marked as such
@@ -123,7 +128,7 @@ database or Redis needed.
 | `SECRET_KEY` | `dev-insecure-key` | Seals employee credentials — change it for anything real |
 | `DATABASE_URL` | set by compose | Postgres |
 | `DATA_DIR` | `/data` | Where project git workspaces live |
-| `MAX_AGENT_STEPS` | `24` | Tool calls one employee gets per ticket; they are warned 3 short of it |
+| `MAX_AGENT_STEPS` | `32` | Tool calls one employee gets per ticket; they are warned 3 short of it |
 | `MAX_RUN_PASSES` | `4` | Ceiling on passes; a run also stops once a pass finishes nothing |
 | `RUN_CONCURRENCY` | `2` | Projects that can run at once |
 | `API_URL` (frontend) | `http://localhost:8000` | Server-side only; the browser uses `/api/backend/*` |
@@ -132,6 +137,9 @@ database or Redis needed.
 
 - External connectors. Tools sit behind an adapter and the built-in modules
   implement it; Jira Cloud, Confluence and GitHub adapters are not written.
+- Native app builds. The image ships Flutter and Dart, so employees can analyse,
+  test and build for the web — but there is no Android SDK, no Xcode and no
+  display, so APKs, desktop binaries and emulators are out of reach.
 - Authentication. There are no platform users — anyone who can reach the API is
   an admin of every company.
 - MCP authorization verifies that a bearer token is present, not that it is valid.

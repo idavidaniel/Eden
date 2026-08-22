@@ -8,6 +8,7 @@ import type {
   Employee,
   EmployeeDetail,
   FileEntry,
+  PreviewState,
   Project,
   ProjectDetail,
   Role,
@@ -91,12 +92,17 @@ export const api = {
   projects: {
     list: (companyId: string) => request<Project[]>(`/companies/${companyId}/projects`),
     get: (id: string) => request<ProjectDetail>(`/projects/${id}`),
+    update: (id: string, body: Partial<Project>) => patch<Project>(`/projects/${id}`, body),
     create: (companyId: string, body: { name: string; brief: string; key?: string }) =>
       post<Project>(`/companies/${companyId}/projects`, body),
     tickets: (id: string) => request<Ticket[]>(`/projects/${id}/tickets`),
     createTicket: (id: string, body: Record<string, unknown>) =>
       post<Ticket>(`/projects/${id}/tickets`, body),
     startRun: (id: string, brief?: string) => post<Run>(`/projects/${id}/runs`, { brief }),
+    packages: (id: string) => request<{ packages: string[] }>(`/projects/${id}/packages`),
+    preview: (id: string) => request<PreviewState>(`/projects/${id}/preview`),
+    buildPreview: (id: string, pkg: string) =>
+      post<PreviewState>(`/projects/${id}/preview`, { package: pkg }),
   },
 
   tickets: {

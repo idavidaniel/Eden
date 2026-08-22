@@ -147,3 +147,84 @@ def test_tickets_can_be_deleted(client, project):
     assert ticket["key"] not in [
         t["key"] for t in client.get(f"/projects/{project['id']}/tickets").json()
     ]
+
+
+def test_verify_command_must_pass_the_sandbox_rules(client, project):
+    rejected = client.patch(
+        f"/projects/{project['id']}", json={"verify_command": "curl http://example.com"}
+    )
+    assert rejected.status_code == 400
+    assert "not allowed" in rejected.json()["detail"]
+
+    piped = client.patch(f"/projects/{project['id']}", json={"verify_command": "pytest | tee out"})
+    assert piped.status_code == 400
+
+    accepted = client.patch(f"/projects/{project['id']}", json={"verify_command": "pytest -q"})
+    assert accepted.status_code == 200
+    assert accepted.json()["verify_command"] == "pytest -q"
+
+
+def test_failing_verification_reopens_a_ticket(client, company, project):
+    """The platform's own check overrides what the employee claims."""
+    from agents.engine import verify_project
+    from db import session
+    from models import Company, Project, Run, Ticket
+
+    client.patch(f"/projects/{project['id']}", json={"verify_command": "python3 fails.py"})
+    client.put(
+        f"/projects/{project['id']}/file",
+        json={"path": "fails.py", "content": "raise SystemExit(3)\n"},
+    )
+    ticket = client.post(
+        f"/projects/{project['id']}/tickets", json={"title": "Claims to work", "status": "done"}
+    ).json()
+
+    db = session()
+    try:
+        project_row = db.get(Project, project["id"])
+        company_row = db.get(Company, company["id"])
+        ticket_row = db.get(Ticket, ticket["id"])
+        run = Run(company_id=company_row.id, project_id=project_row.id, status="running")
+        db.add(run)
+        db.flush()
+        verdict = verify_project(db, run, project_row, ticket_row, company_row)
+        db.commit()
+    finally:
+        db.close()
+
+    assert verdict["exit_code"] == 3
+    detail = client.get(f"/tickets/{ticket['id']}").json()
+    verification = [c for c in detail["comments"] if c["author_label"] == "Verification"]
+    assert verification and "FAILED (exit 3)" in verification[0]["body"]
+
+
+def test_passing_verification_is_recorded(client, company, project):
+    from agents.engine import verify_project
+    from db import session
+    from models import Company, Project, Run, Ticket
+
+    client.patch(f"/projects/{project['id']}", json={"verify_command": "python3 ok.py"})
+    client.put(
+        f"/projects/{project['id']}/file", json={"path": "ok.py", "content": "print('ok')\n"}
+    )
+    ticket = client.post(f"/projects/{project['id']}/tickets", json={"title": "Real work"}).json()
+
+    db = session()
+    try:
+        run = Run(company_id=company["id"], project_id=project["id"], status="running")
+        db.add(run)
+        db.flush()
+        verdict = verify_project(
+            db,
+            run,
+            db.get(Project, project["id"]),
+            db.get(Ticket, ticket["id"]),
+            db.get(Company, company["id"]),
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    assert verdict["exit_code"] == 0
+    detail = client.get(f"/tickets/{ticket['id']}").json()
+    assert any("passed" in c["body"] for c in detail["comments"])
