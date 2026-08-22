@@ -103,6 +103,8 @@ export const api = {
     preview: (id: string) => request<PreviewState>(`/projects/${id}/preview`),
     buildPreview: (id: string, pkg: string) =>
       post<PreviewState>(`/projects/${id}/preview`, { package: pkg }),
+    autofix: (id: string, body: { command?: string; cwd?: string; max_attempts?: number } = {}) =>
+      post<{ status: string; command: string }>(`/projects/${id}/autofix`, body),
   },
 
   tickets: {

@@ -48,6 +48,45 @@ def write_file(ctx: ToolContext, path: str, content: str) -> str:
     return f"{'Created' if result['created'] else 'Updated'} {path} ({result['bytes']} bytes)."
 
 
+def edit_file(ctx: ToolContext, path: str, old_text: str, new_text: str) -> str:
+    """Replace one exact snippet in a file.
+
+    Without this, changing one line of a 400-line file means re-emitting the
+    whole file, which is what employees kept running out of budget doing.
+    """
+    space = _workspace(ctx)
+    try:
+        content = space.read(path)
+    except Exception as exc:
+        return f"Could not read {path}: {exc}"
+
+    occurrences = content.count(old_text)
+    if occurrences == 0:
+        return (
+            f"No match in {path}. The text must match exactly, including indentation. "
+            "Read the file again and copy the snippet verbatim."
+        )
+    if occurrences > 1:
+        return (
+            f"{occurrences} matches in {path}; the snippet must be unique. "
+            "Include a surrounding line or two to disambiguate."
+        )
+
+    space.write(path, content.replace(old_text, new_text, 1))
+    events.record(
+        ctx.db,
+        company_id=ctx.company.id,
+        project_id=ctx.project.id,
+        run_id=ctx.run.id if ctx.run else None,
+        employee_id=ctx.employee.id,
+        actor=ctx.actor,
+        kind="code.write",
+        summary=f"edited {path}",
+        payload={"path": path, "lines_changed": new_text.count("\n") - old_text.count("\n")},
+    )
+    return f"Edited {path}."
+
+
 def delete_file(ctx: ToolContext, path: str) -> str:
     _workspace(ctx).delete(path)
     events.record(
@@ -144,6 +183,23 @@ TOOLS = [
             }
         ),
         handler=write_file,
+    ),
+    Tool(
+        name="edit_file",
+        group="workspace",
+        description=(
+            "Change part of an existing file by replacing an exact snippet. Prefer "
+            "this over write_file for edits: it does not require re-sending the "
+            "whole file. The snippet must appear exactly once."
+        ),
+        parameters=obj(
+            {
+                "path": string("Path relative to the workspace root"),
+                "old_text": string("Exact text to replace, copied verbatim from the file"),
+                "new_text": string("Replacement text"),
+            }
+        ),
+        handler=edit_file,
     ),
     Tool(
         name="delete_file",

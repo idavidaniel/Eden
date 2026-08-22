@@ -152,3 +152,48 @@ def test_employees_are_told_not_to_split_their_own_ticket(client, company):
     # Engineers are told which toolchains the sandbox actually has.
     assert "The workspace can run:" in prompt
     assert "flutter" in prompt
+
+
+def test_edit_file_replaces_one_unique_snippet(client, company, project):
+    from agents import tools
+    from agents.tools.base import ToolContext
+    from db import session
+    from models import Company, Project
+
+    client.put(
+        f"/projects/{project['id']}/file",
+        json={
+            "path": "app.dart",
+            "content": "import 'a.dart';\n\nvoid main() {}\nvoid other() {}\n",
+        },
+    )
+
+    db = session()
+    try:
+        project_row = db.get(Project, project["id"])
+        company_row = db.get(Company, company["id"])
+        engineer = next(e for e in company_row.employees if e.role_key == "backend_engineer")
+        ctx = ToolContext(db=db, company=company_row, employee=engineer, project=project_row)
+
+        ok = tools.execute(
+            "edit_file",
+            ctx,
+            {"path": "app.dart", "old_text": "import 'a.dart';", "new_text": "import 'b.dart';"},
+        )
+        missing = tools.execute(
+            "edit_file", ctx, {"path": "app.dart", "old_text": "nope", "new_text": "x"}
+        )
+        ambiguous = tools.execute(
+            "edit_file", ctx, {"path": "app.dart", "old_text": "void ", "new_text": "Future "}
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    assert "Edited app.dart" in ok
+    assert "No match" in missing
+    assert "2 matches" in ambiguous
+
+    content = client.get(f"/projects/{project['id']}/file", params={"path": "app.dart"}).json()
+    assert content["content"].startswith("import 'b.dart';")
+    assert "void main() {}" in content["content"]

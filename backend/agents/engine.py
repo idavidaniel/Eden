@@ -28,7 +28,7 @@ from models import (
     Ticket,
     TicketComment,
 )
-from services import events, workspace
+from services import autofix, events, workspace
 from services.roles import ROLES, get_role, match_role
 
 log = logging.getLogger(__name__)
@@ -380,7 +380,9 @@ def work_ticket(db: Session, run: Run, project: Project, ticket: Ticket, company
     db.commit()
 
 
-def _autocommit(db: Session, run: Run, project: Project, ticket: Ticket, employee, company) -> None:
+def _autocommit(
+    db: Session, run: Run | None, project: Project, ticket: Ticket, employee, company
+) -> None:
     """Commit whatever the employee left behind.
 
     They are told to commit, and often do not. Uncommitted work is invisible in
@@ -403,7 +405,7 @@ def _autocommit(db: Session, run: Run, project: Project, ticket: Ticket, employe
             db,
             company_id=company.id,
             project_id=project.id,
-            run_id=run.id,
+            run_id=run.id if run else None,
             employee_id=employee.id,
             actor=f"{employee.name} ({employee.title})",
             kind="code.commit",
@@ -589,6 +591,151 @@ def _await_resume(db: Session, run_id: str) -> bool:
         if status != "paused":
             return True
         time.sleep(1.5)
+
+
+def debug_until_green(
+    project_id: str,
+    command: str,
+    cwd: str = "",
+    max_attempts: int | None = None,
+    label: str = "check",
+) -> dict:
+    """Run a check, hand the failure to an engineer, repeat until it passes.
+
+    Stops early when an attempt leaves exactly the same errors behind: another
+    identical attempt is not debugging, it is spending tokens.
+    """
+    attempts = max_attempts or autofix.MAX_ATTEMPTS
+    db = session()
+    history: list[dict] = []
+    try:
+        project = db.get(Project, project_id)
+        if not project:
+            return {"status": "failed", "error": "Project not found."}
+        company = project.company
+
+        check = autofix.run_check(project, company, command, cwd)
+        if check.passed:
+            events.record(
+                db,
+                company_id=company.id,
+                project_id=project.id,
+                actor="Auto-debug",
+                kind="autofix.passed",
+                summary=f"`{command}` already passes",
+            )
+            db.commit()
+            return {"status": "passed", "attempts": 0, "history": history}
+
+        events.record(
+            db,
+            company_id=company.id,
+            project_id=project.id,
+            actor="Auto-debug",
+            kind="autofix.started",
+            summary=f"{label} failed - starting automated debugging",
+            payload={"command": command},
+        )
+        db.commit()
+
+        previous_signature = check.signature()
+        for attempt in range(1, attempts + 1):
+            fixer = autofix.pick_fixer(db, company.id, check.output)
+            if not fixer:
+                return {"status": "failed", "error": "Nobody available to fix it."}
+
+            ticket = autofix.ensure_bug_ticket(db, project, fixer, check)
+            _set_status(db, fixer, "working", f"auto-debug {attempt}: {command}")
+            events.record(
+                db,
+                company_id=company.id,
+                project_id=project.id,
+                employee_id=fixer.id,
+                actor="Auto-debug",
+                kind="autofix.attempt",
+                summary=f"attempt {attempt}/{attempts}: {fixer.name} on `{command}`",
+                payload={"attempt": attempt, "ticket": ticket.key},
+            )
+            db.commit()
+
+            where = f" (run it with cwd={cwd})" if cwd else ""
+            problems = "\n".join(check.errors())
+            space = workspace.for_project(company.slug, project.key)
+            snippets = check.snippets(space, cwd)
+            ctx = ToolContext(
+                db=db, company=company, employee=fixer, project=project, ticket=ticket
+            )
+            run_agent_turn(
+                db,
+                ctx,
+                f"""`{command}` is failing and you are fixing it.{where}
+
+Reported problems:
+{problems}
+
+The code at those lines (> marks the reported line):
+{snippets or "(could not read the source)"}
+
+Fix the cause. Use edit_file with a snippet copied exactly from the code above —
+you already have what you need, so do not spend calls grepping for it. After each
+change run `{command}` yourself and keep going until it exits 0. Do not weaken the
+check, delete tests, or stop while it still fails.""",
+                kind="autofix",
+            )
+            _autocommit(db, None, project, ticket, fixer, company)
+            _set_status(db, fixer, "idle")
+
+            check = autofix.run_check(project, company, command, cwd)
+            history.append({"attempt": attempt, "passed": check.passed, "by": fixer.name})
+
+            if check.passed:
+                ticket.status = "done"
+                ticket.result = f"`{command}` passes."
+                db.add(ticket)
+                events.record(
+                    db,
+                    company_id=company.id,
+                    project_id=project.id,
+                    employee_id=fixer.id,
+                    actor="Auto-debug",
+                    kind="autofix.passed",
+                    summary=f"`{command}` passes after {attempt} attempt(s)",
+                    payload={"attempts": attempt},
+                )
+                db.commit()
+                return {"status": "passed", "attempts": attempt, "history": history}
+
+            signature = check.signature()
+            if signature == previous_signature and attempt > 1:
+                events.record(
+                    db,
+                    company_id=company.id,
+                    project_id=project.id,
+                    actor="Auto-debug",
+                    kind="autofix.stalled",
+                    summary=f"attempt {attempt} changed nothing - stopping",
+                    payload={"command": command},
+                )
+                db.commit()
+                return {"status": "stalled", "attempts": attempt, "history": history}
+            previous_signature = signature
+
+        events.record(
+            db,
+            company_id=company.id,
+            project_id=project.id,
+            actor="Auto-debug",
+            kind="autofix.exhausted",
+            summary=f"`{command}` still failing after {attempts} attempts",
+        )
+        db.commit()
+        return {"status": "exhausted", "attempts": attempts, "history": history}
+    except Exception as exc:
+        log.exception("auto-debug failed")
+        db.rollback()
+        return {"status": "failed", "error": str(exc)}
+    finally:
+        db.close()
 
 
 def execute_run(run_id: str) -> None:

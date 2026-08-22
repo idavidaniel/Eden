@@ -36,6 +36,7 @@ in chat — while you watch it happen live and interrupt when you want to.
 | **Runs** | Start, pause, resume or stop an autonomous run. QA-rejected work comes back for a rework pass. |
 | **Verification gate** | A per-project command (`dart analyze .`, `flutter test`, `pytest -q`) that the *platform* runs after every ticket. Fails → the ticket reopens, whatever the employee or QA claimed. |
 | **Live preview** | Builds a Flutter package for the web and serves it, so a finished app can be opened from the board. The container has no screen, so web is the honest route. |
+| **Auto-debug** | Build fails → the platform hands an engineer the errors *and the source around them*, they fix and re-run until the check passes. Stops itself when an attempt changes nothing. Triggered automatically when a preview build fails. |
 | **MCP** | The same tool registry exposed over JSON-RPC 2.0, so external clients can act as an employee. |
 
 ## Quick start
@@ -56,6 +57,22 @@ python3 scripts/demo.py
 
 It founds a company, hires six employees, files a project brief and prints the
 team's activity as they work through it.
+
+## The debugging loop
+
+A failing check does not wait for you:
+
+1. The platform runs the check (`dart analyze .`, `flutter test`, `pytest -q` …).
+2. On failure it picks the engineer whose work broke — by file type — and opens
+   or reuses one `Auto-debug:` bug ticket.
+3. That engineer gets the error lines **and the numbered source around each one**,
+   so they can edit rather than hunt. `edit_file` replaces one exact snippet, so a
+   one-line fix does not mean re-emitting a 400-line file.
+4. The check runs again. Green → the ticket closes. Same errors as last time →
+   the loop stops rather than burning tokens. Otherwise, next attempt.
+
+Start it by hand with `POST /projects/{id}/autofix`, from the preview panel, or
+let a failed preview build start it for you.
 
 ## How a run works
 

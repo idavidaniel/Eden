@@ -319,6 +319,34 @@ def comment_ticket(ticket_id: str, payload: CommentIn, db: Session = Depends(get
     }
 
 
+class AutofixIn(BaseModel):
+    # Defaults to the project's verification command.
+    command: str | None = None
+    cwd: str = ""
+    max_attempts: int | None = None
+
+
+@router.post("/projects/{project_id}/autofix", status_code=202)
+def start_autofix(project_id: str, payload: AutofixIn, db: Session = Depends(get_db)):
+    """Debug the project automatically until its check passes."""
+    project = get_project(db, project_id)
+    command = payload.command or project.verify_command
+    if not command:
+        raise HTTPException(
+            status_code=400,
+            detail="Set a verification command for this project, or pass one explicitly.",
+        )
+    try:
+        workspace.check_command(command)
+    except workspace.WorkspaceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    engine.get_executor().submit(
+        engine.debug_until_green, project.id, command, payload.cwd, payload.max_attempts, "check"
+    )
+    return {"status": "started", "command": command, "cwd": payload.cwd}
+
+
 # --- runs ---------------------------------------------------------------
 
 

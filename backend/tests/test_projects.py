@@ -228,3 +228,104 @@ def test_passing_verification_is_recorded(client, company, project):
     assert verdict["exit_code"] == 0
     detail = client.get(f"/tickets/{ticket['id']}").json()
     assert any("passed" in c["body"] for c in detail["comments"])
+
+
+def test_autofix_needs_a_command(client, project, monkeypatch):
+    response = client.post(f"/projects/{project['id']}/autofix", json={})
+    assert response.status_code == 400
+    assert "verification command" in response.json()["detail"]
+
+    # Record the dispatch instead of running a real debugging loop in the suite.
+    submitted = []
+    from agents import engine
+
+    monkeypatch.setattr(
+        engine,
+        "get_executor",
+        lambda: type("Fake", (), {"submit": lambda self, *a: submitted.append(a)})(),
+    )
+
+    client.patch(f"/projects/{project['id']}", json={"verify_command": "pytest -q"})
+    started = client.post(f"/projects/{project['id']}/autofix", json={})
+    assert started.status_code == 202
+    assert started.json()["command"] == "pytest -q"
+    assert submitted and submitted[0][1] == project["id"]
+    assert submitted[0][2] == "pytest -q"
+
+
+def test_autofix_rejects_commands_the_sandbox_would_refuse(client, project):
+    response = client.post(f"/projects/{project['id']}/autofix", json={"command": "sudo make me"})
+    assert response.status_code == 400
+
+
+def test_check_result_extracts_error_lines():
+    from services.autofix import CheckResult
+
+    output = "\n".join(
+        [
+            "Analyzing app...",
+            "  error - lib/main.dart:12:3 - Undefined name 'Clipboard'.",
+            "  info - lib/main.dart:44:1 - Prefer const.",
+            "  error - lib/main.dart:90:1 - Expected an identifier.",
+            "2 issues found.",
+        ]
+    )
+    result = CheckResult(passed=False, command="dart analyze .", output=output)
+
+    errors = result.errors()
+    assert len(errors) == 2
+    assert all("error -" in line for line in errors)
+    # The signature is order-independent, so a reshuffled log still counts as no progress.
+    reversed_result = CheckResult(
+        passed=False, command="dart analyze .", output="\n".join(reversed(output.splitlines()))
+    )
+    assert result.signature() == reversed_result.signature()
+
+
+def test_fixer_is_chosen_by_what_broke(client, company):
+    from db import session
+    from services.autofix import pick_fixer
+
+    db = session()
+    try:
+        dart = pick_fixer(db, company["id"], "lib/main.dart:12 Undefined name")
+        python = pick_fixer(db, company["id"], "Traceback ... test_server.py")
+    finally:
+        db.close()
+
+    assert dart.role_key in {"frontend_engineer", "architect", "backend_engineer"}
+    assert python.role_key in {"backend_engineer", "devops_engineer", "architect"}
+
+
+def test_error_snippets_quote_the_source_around_each_error(client, project):
+    from db import session
+    from models import Project
+    from services import workspace
+    from services.autofix import CheckResult
+
+    client.put(
+        f"/projects/{project['id']}/file",
+        json={
+            "path": "pkg/lib/main.dart",
+            "content": "\n".join(f"line {n}" for n in range(1, 31)) + "\n",
+        },
+    )
+
+    db = session()
+    try:
+        project_row = db.get(Project, project["id"])
+        space = workspace.for_project(project_row.company.slug, project_row.key)
+    finally:
+        db.close()
+
+    result = CheckResult(
+        passed=False,
+        command="dart analyze .",
+        output="  error - lib/main.dart:15:3 - Undefined name 'Clipboard'.",
+    )
+    snippets = result.snippets(space, cwd="pkg", radius=2)
+
+    assert "pkg/lib/main.dart:15" in snippets
+    assert ">   15 | line 15" in snippets
+    assert "line 13" in snippets and "line 17" in snippets
+    assert "line 12" not in snippets

@@ -74,6 +74,8 @@ def toolbelt_briefing(employee: Employee) -> str:
         from services.workspace import ALLOWED_COMMANDS
 
         briefing += (
+            "\n\nTo change an existing file use edit_file (replace one exact snippet);"
+            " write_file is for new files and rewrites the whole thing."
             "\n\nThe workspace can run: "
             + ", ".join(sorted(ALLOWED_COMMANDS))
             + ".\nUse run_command to prove your work: scaffold with the real toolchain"

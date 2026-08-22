@@ -26,6 +26,11 @@
       build reopens the ticket regardless of what the employee reported
 - [x] Web preview: build a Flutter package for the web and serve it from the board
 
+- [x] `edit_file` for surgical changes, so a one-line fix does not require
+      rewriting the whole file
+- [x] Automated debugging: build → errors + source context → fix → rebuild,
+      with stall detection; runs itself when a preview build fails
+
 ## Next
 
 - [ ] Android SDK in the image so `flutter build apk` produces an installable app

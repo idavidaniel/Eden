@@ -11,6 +11,7 @@ import { Button, Card, ErrorNote, SectionTitle, Select } from "./ui";
 export default function PreviewPanel({ projectId }: { projectId: string }) {
   const [chosen, setChosen] = useState("");
   const [error, setError] = useState("");
+  const [debugging, setDebugging] = useState(false);
   const [expanded, setExpanded] = useState(true);
 
   const packages = useResource<{ packages: string[] }>(
@@ -26,6 +27,18 @@ export default function PreviewPanel({ projectId }: { projectId: string }) {
   const building = state.status === "building";
   const options = packages.data?.packages ?? [];
   const target = chosen || state.package || options[0] || "";
+
+  const debug = async () => {
+    setError("");
+    setDebugging(true);
+    try {
+      await api.projects.autofix(projectId, { cwd: target === "." ? "" : target });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDebugging(false);
+    }
+  };
 
   const start = async () => {
     setError("");
@@ -100,7 +113,15 @@ export default function PreviewPanel({ projectId }: { projectId: string }) {
 
       {state.status === "failed" && (
         <div className="mt-3">
-          <p className="mb-1 text-sm text-rose-300">The build failed:</p>
+          <div className="mb-2 flex flex-wrap items-center gap-3">
+            <p className="text-sm text-rose-300">The build failed.</p>
+            <Button size="sm" variant="subtle" onClick={debug} disabled={debugging}>
+              {debugging ? "Debugging…" : "🛠 Auto-debug this"}
+            </Button>
+            <span className="text-xs text-slate-500">
+              An engineer is handed the compiler output and rebuilds until it passes.
+            </span>
+          </div>
           <pre className="max-h-48 overflow-auto rounded-lg border border-rose-500/20 bg-rose-500/5 p-3 font-mono text-xs whitespace-pre-wrap text-rose-200">
             {state.error}
           </pre>

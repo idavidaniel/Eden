@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from agents import engine
 from db import get_db, session
 from models import Project
 from services import events, preview, workspace
@@ -45,6 +46,19 @@ def _run_build(project_id: str) -> None:
             payload={"package": package, "status": state["status"]},
         )
         db.commit()
+
+        # A failed preview is a compile error with a full log attached: hand it
+        # straight to an engineer instead of waiting to be asked.
+        if state["status"] == "failed" and (project.preview or {}).get("autofix", True):
+            href = preview.base_href(company.slug, project.key, package)
+            engine.get_executor().submit(
+                engine.debug_until_green,
+                project.id,
+                f"flutter build web --release --base-href={href}",
+                "" if package == "." else package,
+                None,
+                "preview build",
+            )
     except Exception as exc:  # never leave the UI spinning
         db.rollback()
         project = db.get(Project, project_id)
