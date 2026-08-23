@@ -8,3 +8,8 @@ openai>=1.40
 # Persistence
 sqlalchemy>=2.0
 psycopg[binary,pool]>=3.2
+alembic>=1.13
+
+# Check kinds that are not "run a command": schema validation and industry packs.
+jsonschema>=4.21
+PyYAML>=6.0

@@ -81,7 +81,7 @@ Recent conversation:
 The latest message is for you: "{question}"
 
 Answer it. Use post_message to reply in #{channel.name} (that is how the person
-sees your answer). If it implies work, create or update tickets too. Keep it short.""",
+sees your answer). If it implies work, create or update work_items too. Keep it short.""",
             kind="chat",
             max_steps=6,
         )

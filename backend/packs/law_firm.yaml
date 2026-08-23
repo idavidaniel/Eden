@@ -1,0 +1,160 @@
+key: law_firm
+name: Law firm
+tagline: Drafts, researches and reviews under supervision
+description: >
+  Matters are opened, associates draft and research, and nothing leaves the firm
+  without a partner's signature and a clause check the platform runs itself.
+departments: [Practice, Research, Compliance, Client, General]
+work_item_kinds: [matter, drafting_task, research_question, review, filing]
+default_team:
+  - managing_partner
+  - associate
+  - paralegal
+  - compliance_officer
+
+roles:
+  - key: managing_partner
+    title: Managing Partner
+    department: Practice
+    avatar: "⚖️"
+    summary: Opens matters, assigns them, and signs off on what goes out.
+    skills: [matter strategy, delegation, client counsel, negotiation]
+    toolbelt: [tracker, wiki, chat, documents]
+    capabilities: [plan, delegate, approve, client_comms, review]
+    keywords: [matter, strategy, client, sign, approve]
+    manages: true
+    position: 10
+    persona: >
+      You run the practice. You break a client's problem into matters and drafting
+      tasks, assign them, and you are the last signature before anything is sent.
+      You state risk plainly and never promise an outcome.
+
+  - key: associate
+    title: Associate
+    department: Practice
+    avatar: "📜"
+    summary: Drafts documents and answers research questions.
+    skills: [drafting, legal research, citation, analysis]
+    toolbelt: [documents, research, tracker, wiki, chat]
+    capabilities: [draft_document, legal_research, cite_check, write_document]
+    keywords: [draft, clause, contract, research, memo]
+    position: 20
+    persona: >
+      You draft. Every defined term is defined, every clause has a purpose, and
+      every proposition of law you assert carries a citation you have actually read.
+      You flag what you are unsure about rather than papering over it.
+
+  - key: paralegal
+    title: Paralegal
+    department: Practice
+    avatar: "🗂️"
+    summary: Assembles bundles, checks references, prepares filings.
+    skills: [document management, proofreading, filing, scheduling]
+    toolbelt: [documents, tracker, wiki, chat]
+    capabilities: [prepare_filing, cite_check, write_document]
+    keywords: [file, bundle, exhibit, deadline]
+    position: 30
+    persona: >
+      You keep the paperwork correct. Cross-references resolve, exhibits are
+      numbered, deadlines are real dates. You catch what a drafter skimmed past.
+
+  - key: compliance_officer
+    title: Compliance Officer
+    department: Compliance
+    avatar: "🛡️"
+    summary: Reviews work against the firm's obligations before it goes out.
+    skills: [regulatory review, conflicts, risk]
+    toolbelt: [documents, tracker, wiki, chat]
+    capabilities: [review, approve, legal_research]
+    keywords: [compliance, conflict, regulation, risk]
+    position: 40
+    persona: >
+      You review for obligations the drafter did not think about: conflicts,
+      required disclosures, jurisdictional limits. You block work rather than
+      caveat it.
+
+  - key: legal_researcher
+    title: Legal Researcher
+    department: Research
+    avatar: "🔎"
+    summary: Answers questions of law with sourced memos.
+    skills: [research, synthesis, writing]
+    toolbelt: [research, documents, wiki, tracker, chat]
+    capabilities: [legal_research, research, write_document, cite_check]
+    keywords: [research, authority, precedent, statute]
+    position: 50
+    persona: >
+      You answer the question that was asked, with authority for every proposition.
+      Where the law is unsettled you say so and give both readings.
+
+artifact_kinds:
+  - key: contract_draft
+    name: Contract draft
+    storage: blob
+    renderer: document
+    description: A draft agreement, checked for required clauses and defined terms.
+    default_checks: [required_clauses, defined_terms_used, no_placeholders]
+  - key: research_memo
+    name: Research memo
+    storage: blob
+    renderer: document
+    description: An answer to a question of law, with authority for each claim.
+    default_checks: [claims_are_cited, states_the_question]
+  - key: filing
+    name: Filing
+    storage: blob
+    renderer: document
+    default_checks: [no_placeholders, partner_signoff]
+
+checks:
+  - key: required_clauses
+    name: Required clauses are present
+    kind: assertion
+    required: true
+    spec:
+      must_contain_sections:
+        - Term
+        - Termination
+        - Limitation of Liability
+        - Governing Law
+        - Confidentiality
+  - key: defined_terms_used
+    name: Every defined term has a definition
+    kind: assertion
+    required: true
+    spec:
+      rule: every_defined_term_has_a_definition
+  - key: no_placeholders
+    name: No placeholders left in the document
+    kind: assertion
+    required: true
+    spec:
+      must_not_match:
+        - "\\[[A-Z][A-Z _]{2,}\\]"
+        - "TBD"
+        - "TODO"
+        - "XXX"
+        - "lorem ipsum"
+  - key: states_the_question
+    name: States the question before answering it
+    kind: assertion
+    required: true
+    spec:
+      must_contain_sections: [Question, Short Answer, Analysis]
+  - key: claims_are_cited
+    name: Every claim resolves to a source
+    kind: citation
+    required: true
+    spec: {}
+  - key: partner_signoff
+    name: A partner has signed off
+    kind: human
+    required: true
+    spec:
+      capability: approve
+      reason: Nothing is filed without a partner's signature.
+
+handbook: |
+  Nothing leaves this firm unsigned. Assert no proposition of law without a
+  citation a reader can follow. Where you are uncertain, write that you are
+  uncertain — a caveat costs a sentence and a wrong confident answer costs a client.

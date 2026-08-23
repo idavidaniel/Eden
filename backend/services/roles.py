@@ -1,220 +1,138 @@
-"""Catalogue of hireable roles.
+"""Roles, as data belonging to a company rather than a hardcoded catalogue.
 
-A role bundles what the employee is good at, which tools they are issued
-accounts for, and the voice their persona defaults to. Companies can override
-any of it per employee.
+A role used to be one of nine software jobs compiled into this module. It is a
+row now, seeded from the company's industry pack, so a law firm gets partners and
+a research lab gets a principal investigator. Everything here reads the rows and
+falls back to the pack file when a company has none yet — which is what keeps
+companies created before packs existed working unchanged.
 """
 
-from dataclasses import dataclass, field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-TOOLS = ["workspace", "tracker", "wiki", "chat"]
+from models import Company, Employee, Role
 
+from . import packs
 
-@dataclass(frozen=True)
-class Role:
-    key: str
-    title: str
-    department: str
-    avatar: str
-    summary: str
-    skills: list[str]
-    toolbelt: list[str]
-    persona: str
-    manages: bool = False
-    writes_code: bool = False
-    order: int = 100
-    keywords: list[str] = field(default_factory=list)
+# Tool groups a company can issue accounts for.
+TOOLS = ["workspace", "tracker", "wiki", "chat", "documents", "research", "data"]
 
 
-ROLES: dict[str, Role] = {
-    role.key: role
-    for role in [
-        Role(
-            key="engineering_manager",
-            title="Engineering Manager",
-            department="Engineering",
-            avatar="🧭",
-            summary="Breaks a brief into tickets, assigns them and unblocks the team.",
-            skills=["planning", "delegation", "estimation", "reviews"],
-            toolbelt=["tracker", "wiki", "chat"],
-            persona=(
-                "You run delivery. You turn ambiguous briefs into small, verifiable tickets, "
-                "assign them to the right person, and keep the team unblocked. You are decisive "
-                "and you never do the implementation work yourself."
-            ),
-            manages=True,
-            order=10,
-            keywords=["plan", "coordinate", "manage"],
-        ),
-        Role(
-            key="product_manager",
-            title="Product Manager",
-            department="Product",
-            avatar="🗺️",
-            summary="Turns goals into requirements, acceptance criteria and specs.",
-            skills=["requirements", "user stories", "prioritisation"],
-            toolbelt=["tracker", "wiki", "chat"],
-            persona=(
-                "You own the 'what' and the 'why'. You write crisp requirements with explicit "
-                "acceptance criteria, and you push back on scope that does not serve the goal."
-            ),
-            order=20,
-            keywords=["spec", "requirement", "research", "scope"],
-        ),
-        Role(
-            key="architect",
-            title="Software Architect",
-            department="Engineering",
-            avatar="📐",
-            summary="Chooses the structure, writes the technical design.",
-            skills=["system design", "trade-offs", "documentation"],
-            toolbelt=["workspace", "wiki", "tracker", "chat"],
-            persona=(
-                "You decide how the system is put together and write the design down before code "
-                "is written. You justify every trade-off in one sentence and prefer boring, "
-                "proven choices."
-            ),
-            writes_code=True,
-            order=30,
-            keywords=["design", "architecture", "schema", "structure"],
-        ),
-        Role(
-            key="backend_engineer",
-            title="Backend Engineer",
-            department="Engineering",
-            avatar="⚙️",
-            summary="Implements services, APIs and data models in the workspace.",
-            skills=["python", "apis", "databases", "testing"],
-            toolbelt=["workspace", "tracker", "chat", "wiki"],
-            persona=(
-                "You write server-side code. You implement the ticket exactly, keep functions "
-                "small, and always leave the repository in a working state."
-            ),
-            writes_code=True,
-            order=40,
-            keywords=["api", "backend", "server", "database", "endpoint"],
-        ),
-        Role(
-            key="frontend_engineer",
-            title="Frontend Engineer",
-            department="Engineering",
-            avatar="🎨",
-            summary="Builds the user interface and wires it to the API.",
-            skills=["typescript", "react", "css", "accessibility"],
-            toolbelt=["workspace", "tracker", "chat", "wiki"],
-            persona=(
-                "You build interfaces. You care about states (loading, empty, error), keyboard "
-                "access and never shipping a screen that lies about what the backend returned."
-            ),
-            writes_code=True,
-            order=50,
-            keywords=["ui", "frontend", "page", "component", "style"],
-        ),
-        Role(
-            key="qa_engineer",
-            title="QA Engineer",
-            department="Quality",
-            avatar="🔍",
-            summary="Reviews finished work against acceptance criteria and files bugs.",
-            skills=["test design", "edge cases", "regression"],
-            toolbelt=["workspace", "tracker", "chat"],
-            persona=(
-                "You verify. You read the acceptance criteria, inspect what was actually built, "
-                "and you are happy to reject work. You file precise bugs with reproduction steps."
-            ),
-            writes_code=True,
-            order=60,
-            keywords=["test", "qa", "verify", "bug"],
-        ),
-        Role(
-            key="tech_writer",
-            title="Technical Writer",
-            department="Product",
-            avatar="📝",
-            summary="Documents what the team built, in the wiki.",
-            skills=["documentation", "editing", "diagrams"],
-            toolbelt=["wiki", "tracker", "chat", "workspace"],
-            persona=(
-                "You write documentation people actually read: short sentences, concrete steps, "
-                "no marketing language. You document what exists, never what is planned."
-            ),
-            order=70,
-            keywords=["document", "docs", "readme", "guide"],
-        ),
-        Role(
-            key="data_analyst",
-            title="Data Analyst",
-            department="Data",
-            avatar="📊",
-            summary="Answers questions with numbers and writes them up.",
-            skills=["sql", "analysis", "reporting"],
-            toolbelt=["workspace", "wiki", "tracker", "chat"],
-            persona=(
-                "You answer questions with evidence. You state the method, the numbers and the "
-                "caveats, and you never present an estimate as a measurement."
-            ),
-            writes_code=True,
-            order=80,
-            keywords=["analysis", "data", "metrics", "report"],
-        ),
-        Role(
-            key="devops_engineer",
-            title="DevOps Engineer",
-            department="Platform",
-            avatar="🚀",
-            summary="Owns build, packaging and deployment files.",
-            skills=["docker", "ci", "automation"],
-            toolbelt=["workspace", "tracker", "chat", "wiki"],
-            persona=(
-                "You make the thing runnable by someone who has never seen it. Dockerfiles, CI "
-                "config, scripts. You automate anything done twice."
-            ),
-            writes_code=True,
-            order=90,
-            keywords=["deploy", "ci", "docker", "pipeline", "infra"],
-        ),
-        Role(
-            key="generalist",
-            title="Generalist",
-            department="General",
-            avatar="🤖",
-            summary="Picks up whatever the company needs.",
-            skills=["research", "writing", "coding"],
-            toolbelt=list(TOOLS),
-            persona="You take on whatever is asked and finish it end to end.",
-            writes_code=True,
-            order=200,
-            keywords=[],
-        ),
-    ]
-}
-
-DEFAULT_TEAM = [
-    "engineering_manager",
-    "product_manager",
-    "backend_engineer",
-    "frontend_engineer",
-    "qa_engineer",
-    "tech_writer",
-]
+def ensure_roles(db: Session, company: Company) -> list[Role]:
+    """Every company has roles; create them from its pack the first time."""
+    rows = list(
+        db.scalars(
+            select(Role).where(Role.company_id == company.id).order_by(Role.position, Role.title)
+        )
+    )
+    if rows:
+        return rows
+    packs.apply_pack(db, company)
+    return list(
+        db.scalars(
+            select(Role).where(Role.company_id == company.id).order_by(Role.position, Role.title)
+        )
+    )
 
 
-def get_role(key: str) -> Role:
-    return ROLES.get(key, ROLES["generalist"])
+def list_roles(db: Session, company: Company) -> list[Role]:
+    return ensure_roles(db, company)
 
 
-def list_roles() -> list[Role]:
-    return sorted(ROLES.values(), key=lambda role: role.order)
+def get_role(db: Session, company: Company, key: str) -> Role:
+    """The named role, or the company's most general one."""
+    rows = ensure_roles(db, company)
+    exact = next((row for row in rows if row.key == key), None)
+    if exact:
+        return exact
+    fallback = next((row for row in rows if not row.manages), None)
+    return fallback or rows[0]
 
 
-def match_role(text: str) -> str:
-    """Best-effort mapping of free text ('build the API') to a role key."""
+def default_team(company: Company) -> list[str]:
+    return list(packs.get_pack(company.pack_key).default_team)
+
+
+def match_role(db: Session, company: Company, text: str) -> str:
+    """Best-effort mapping of free text ('draft the NDA') to a role key."""
     lowered = (text or "").lower()
-    best, best_score = "generalist", 0
-    for role in ROLES.values():
-        score = sum(1 for keyword in role.keywords if keyword in lowered)
+    best, best_score = None, 0
+    for role in ensure_roles(db, company):
+        score = sum(1 for keyword in role.keywords or [] if keyword in lowered)
+        score += sum(1 for capability in role.capabilities or [] if capability in lowered)
         if role.key.replace("_", " ") in lowered or role.title.lower() in lowered:
             score += 3
         if score > best_score:
             best, best_score = role.key, score
-    return best
+    if best:
+        return best
+    doer = next((role for role in ensure_roles(db, company) if not role.manages), None)
+    return doer.key if doer else ensure_roles(db, company)[0].key
+
+
+def manager_of(db: Session, team: list[Employee], company: Company) -> Employee | None:
+    """Whoever runs this team, by their role's `manages` flag."""
+    managing = {role.key for role in ensure_roles(db, company) if role.manages}
+    return next((person for person in team if person.role_key in managing), None)
+
+
+def capabilities_of(db: Session, employee: Employee, company: Company) -> list[str]:
+    """What this person can be asked to do — their own list, or their role's."""
+    if employee.capabilities:
+        return list(employee.capabilities)
+    return list(get_role(db, company, employee.role_key).capabilities or [])
+
+
+def pick_for(
+    db: Session,
+    company: Company,
+    team: list[Employee],
+    *,
+    capability: str | None = None,
+    role_key: str | None = None,
+) -> Employee | None:
+    """Choose who does a piece of work.
+
+    Capability first, role second, department third. Assigning on capability is
+    what lets a planner staff a matter in a law firm without knowing that
+    `associate` is the name of the job that drafts things.
+    """
+    if not team:
+        return None
+
+    if capability:
+        able = [
+            person
+            for person in team
+            if capability in capabilities_of(db, person, company)
+            and not get_role(db, company, person.role_key).manages
+        ]
+        if able:
+            return _least_busy(able)
+        able_including_managers = [
+            person for person in team if capability in capabilities_of(db, person, company)
+        ]
+        if able_including_managers:
+            return _least_busy(able_including_managers)
+
+    if role_key:
+        exact = [person for person in team if person.role_key == role_key]
+        if exact:
+            return _least_busy(exact)
+        role = get_role(db, company, role_key)
+        same_department = [
+            person
+            for person in team
+            if person.department == role.department
+            and not get_role(db, company, person.role_key).manages
+        ]
+        if same_department:
+            return _least_busy(same_department)
+
+    doers = [person for person in team if not get_role(db, company, person.role_key).manages]
+    return _least_busy(doers) if doers else team[0]
+
+
+def _least_busy(people: list[Employee]) -> Employee:
+    """Spread work rather than piling it on whoever appears first."""
+    return sorted(people, key=lambda person: (person.status == "working", person.name))[0]

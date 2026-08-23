@@ -35,9 +35,20 @@ from models.base import Base  # noqa: E402
 
 @pytest.fixture(scope="session", autouse=True)
 def schema():
+    """Build the schema from the models and mark it current.
+
+    The suite runs on SQLite, where several of the Postgres migrations (a vector
+    index, a constraint rename) have nothing to do. Stamping head means the
+    application's own `init_db()` finds an up-to-date database and does nothing,
+    while `tests/test_migrations.py` exercises the real migration path against
+    Postgres where it belongs.
+    """
+    from alembic import command
+
     import models  # noqa: F401
 
     Base.metadata.create_all(db_module.get_engine())
+    command.stamp(db_module._alembic_config(), "head")
     yield
     Base.metadata.drop_all(db_module.get_engine())
 

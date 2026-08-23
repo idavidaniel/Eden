@@ -86,10 +86,10 @@ def test_workspace_runs_allow_listed_commands(client, project):
     finally:
         db.close()
 
-    assert "from the workspace" in ok
-    assert "succeeded" in ok
-    assert "not allowed" in blocked
-    assert "without a shell" in piped
+    assert "from the workspace" in str(ok)
+    assert "succeeded" in str(ok)
+    assert "not allowed" in str(blocked)
+    assert "without a shell" in str(piped)
 
 
 def test_workspace_ignores_build_and_test_caches(client, project):
@@ -117,10 +117,10 @@ def test_workspace_ignores_build_and_test_caches(client, project):
 def test_work_is_committed_for_the_employee(client, company, project):
     from agents.engine import _autocommit
     from db import session
-    from models import Company, Project, Run, Ticket
+    from models import Company, Project, Run, WorkItem
 
-    ticket = client.post(
-        f"/projects/{project['id']}/tickets", json={"title": "Add a module"}
+    work_item = client.post(
+        f"/projects/{project['id']}/work-items", json={"title": "Add a module"}
     ).json()
     client.put(f"/projects/{project['id']}/file", json={"path": "module.py", "content": "x = 1\n"})
 
@@ -128,7 +128,7 @@ def test_work_is_committed_for_the_employee(client, company, project):
     try:
         company_row = db.get(Company, company["id"])
         project_row = db.get(Project, project["id"])
-        ticket_row = db.get(Ticket, ticket["id"])
+        ticket_row = db.get(WorkItem, work_item["id"])
         engineer = next(e for e in company_row.employees if e.role_key == "backend_engineer")
         run = Run(company_id=company_row.id, project_id=project_row.id, status="running")
         db.add(run)
@@ -140,7 +140,7 @@ def test_work_is_committed_for_the_employee(client, company, project):
         db.close()
 
     commits = client.get(f"/projects/{project['id']}/commits").json()
-    assert commits[0]["subject"] == f"{ticket['key']}: Add a module"
+    assert commits[0]["subject"] == f"{work_item['key']}: Add a module"
     assert commits[0]["author"] == engineer.name
 
 
@@ -172,7 +172,7 @@ def test_flutter_and_dart_are_runnable_but_arbitrary_binaries_are_not(client, pr
     finally:
         db.close()
 
-    assert "not allowed" in refused
+    assert "not allowed" in str(refused)
     assert "flutter" in described and "dart" in described
 
 
@@ -226,9 +226,9 @@ def test_commands_can_run_in_a_subdirectory(client, project):
     finally:
         db.close()
 
-    assert inside.rstrip().endswith("packages/app\n[succeeded]") or "packages/app" in inside
-    assert "escapes the workspace" in escaping
-    assert "No such directory" in missing
+    assert "packages/app" in str(inside)
+    assert "escapes the workspace" in str(escaping)
+    assert "No such directory" in str(missing)
 
 
 def test_flutter_packages_are_discovered_and_build_dirs_ignored(client, project):

@@ -1,5 +1,7 @@
-"""Database engine, session factory and schema helpers."""
+"""Database engine, session factory and schema management."""
 
+import logging
+import os
 from collections.abc import Iterator
 from functools import lru_cache
 
@@ -7,6 +9,12 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import get_settings
+
+log = logging.getLogger(__name__)
+
+# The revision that describes the schema as it was before this project had
+# migrations. A database created before then is stamped here and migrated on.
+BASELINE_REVISION = "0001"
 
 
 def sqlalchemy_url(url: str) -> str:
@@ -48,28 +56,51 @@ def get_db() -> Iterator[Session]:
         db.close()
 
 
-# Columns added after a table first shipped. `create_all` only creates missing
-# tables, so these are applied by hand. Small enough not to need Alembic yet.
-ADDED_COLUMNS: list[tuple[str, str, str]] = [
-    ("projects", "verify_command", "VARCHAR(255)"),
-    ("projects", "preview", "JSONB"),
-]
+def _alembic_config():
+    from alembic.config import Config
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    config = Config(os.path.join(here, "alembic.ini"))
+    config.set_main_option("script_location", os.path.join(here, "migrations"))
+    return config
+
+
+# Any constant works; it only has to be the same in every process.
+MIGRATION_LOCK_ID = 8_112_004
 
 
 def init_db() -> None:
-    """Create all tables and apply column additions. Safe to call repeatedly."""
+    """Bring the database up to the current revision. Safe to call repeatedly.
+
+    Two workers booting at once must not both try to migrate: the loser used to
+    re-stamp the baseline over the winner's work. A session-level advisory lock
+    serialises them, and the schema state is only read once the lock is held.
+    """
+    from alembic import command
+
     import models  # noqa: F401  (registers every mapper)
-    from models.base import Base
 
     engine = get_engine()
-    Base.metadata.create_all(engine)
+    if engine.dialect.name != "postgresql":
+        _migrate(command)
+        return
 
-    inspector = inspect(engine)
     with engine.connect() as conn:
-        for table, column, ddl_type in ADDED_COLUMNS:
-            if table not in inspector.get_table_names():
-                continue
-            existing = {col["name"] for col in inspector.get_columns(table)}
-            if column not in existing:
-                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}"))
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
+        conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK_ID})
+        conn.commit()
+        try:
+            _migrate(command)
+        finally:
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK_ID})
+            conn.commit()
+
+
+def _migrate(command) -> None:
+    tables = set(inspect(get_engine()).get_table_names())
+    config = _alembic_config()
+    if tables and "alembic_version" not in tables:
+        log.warning("Adopting an existing database at revision %s", BASELINE_REVISION)
+        command.stamp(config, BASELINE_REVISION)
+    command.upgrade(config, "head")

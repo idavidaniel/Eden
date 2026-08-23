@@ -11,8 +11,8 @@ from models import (
     Project,
     Run,
     RunStep,
-    Ticket,
-    TicketComment,
+    WorkItem,
+    WorkItemComment,
 )
 
 
@@ -75,14 +75,16 @@ def project(row: Project, counts: dict | None = None) -> dict:
     }
 
 
-def ticket(row: Ticket, comments: list[TicketComment] | None = None) -> dict:
+def work_item(row: WorkItem, comments: list[WorkItemComment] | None = None) -> dict:
     data = {
         "id": row.id,
         "project_id": row.project_id,
         "key": row.key,
         "title": row.title,
         "description": row.description,
-        "type": row.type,
+        "kind": row.kind,
+        # Kept while the board still speaks in ticket types.
+        "type": row.kind,
         "status": row.status,
         "priority": row.priority,
         "assignee_id": row.assignee_id,
@@ -143,7 +145,7 @@ def run_step(row: RunStep) -> dict:
         "id": row.id,
         "run_id": row.run_id,
         "employee_id": row.employee_id,
-        "ticket_id": row.ticket_id,
+        "work_item_id": row.work_item_id,
         "kind": row.kind,
         "reasoning": row.reasoning,
         "output": row.output,

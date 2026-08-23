@@ -1,7 +1,7 @@
 """Automated debugging: build, read the failure, fix it, build again.
 
 The manual loop was: notice the preview failed, read the compiler output,
-reopen a ticket, start a run, check again. This does that on its own, and stops
+reopen a work_item, start a run, check again. This does that on its own, and stops
 as soon as the check passes or it stops making progress.
 """
 
@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Company, Employee, Project, Ticket
+from models import Company, Employee, Project, WorkItem
+from services import roles as roles_service
 from services import workspace
-from services.roles import get_role
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ MAX_ERROR_LINES = 25
 
 
 @dataclass
-class CheckResult:
+class CommandOutcome:
     passed: bool
     command: str
     output: str
@@ -77,14 +77,14 @@ class CheckResult:
         return "\n".join(sorted(self.errors()))
 
 
-def run_check(project: Project, company: Company, command: str, cwd: str = "") -> CheckResult:
+def run_check(project: Project, company: Company, command: str, cwd: str = "") -> CommandOutcome:
     space = workspace.for_project(company.slug, project.key)
     space.init(project.name)
     try:
         result = space.run(command, cwd=cwd)
     except Exception as exc:
-        return CheckResult(passed=False, command=command, output=str(exc))
-    return CheckResult(passed=result["exit_code"] == 0, command=command, output=result["output"])
+        return CommandOutcome(passed=False, command=command, output=str(exc))
+    return CommandOutcome(passed=result["exit_code"] == 0, command=command, output=result["output"])
 
 
 def pick_fixer(db: Session, company_id: str, hint: str) -> Employee | None:
@@ -92,6 +92,7 @@ def pick_fixer(db: Session, company_id: str, hint: str) -> Employee | None:
     team = list(db.scalars(select(Employee).where(Employee.company_id == company_id)))
     if not team:
         return None
+    company = db.get(Company, company_id)
 
     lowered = hint.lower()
     if any(token in lowered for token in (".dart", "flutter", "widget", "pubspec")):
@@ -105,17 +106,19 @@ def pick_fixer(db: Session, company_id: str, hint: str) -> Employee | None:
         match = next((e for e in team if e.role_key == role), None)
         if match:
             return match
-    return next((e for e in team if not get_role(e.role_key).manages), team[0])
+    return roles_service.pick_for(db, company, team, capability="debug") or team[0]
 
 
-def ensure_bug_ticket(db: Session, project: Project, fixer: Employee, check: CheckResult) -> Ticket:
-    """One reusable bug ticket per project, so attempts do not litter the board."""
-    ticket = db.scalar(
-        select(Ticket).where(
-            Ticket.project_id == project.id,
-            Ticket.type == "bug",
-            Ticket.title.like("Auto-debug:%"),
-            Ticket.status != "done",
+def ensure_bug_ticket(
+    db: Session, project: Project, fixer: Employee, check: CommandOutcome
+) -> WorkItem:
+    """One reusable bug work_item per project, so attempts do not litter the board."""
+    work_item = db.scalar(
+        select(WorkItem).where(
+            WorkItem.project_id == project.id,
+            WorkItem.kind == "bug",
+            WorkItem.title.like("Auto-debug:%"),
+            WorkItem.status != "done",
         )
     )
     errors = "\n".join(check.errors())
@@ -124,18 +127,18 @@ def ensure_bug_ticket(db: Session, project: Project, fixer: Employee, check: Che
         f"Reported problems:\n```\n{errors}\n```"
     )
 
-    if ticket:
-        ticket.description = description
-        ticket.assignee_id = fixer.id
-        ticket.status = "in_progress"
+    if work_item:
+        work_item.description = description
+        work_item.assignee_id = fixer.id
+        work_item.status = "in_progress"
     else:
         project.ticket_counter += 1
-        ticket = Ticket(
+        work_item = WorkItem(
             project_id=project.id,
             key=f"{project.key}-{project.ticket_counter}",
             title=f"Auto-debug: make `{check.command}` pass",
             description=description,
-            type="bug",
+            kind="bug",
             status="in_progress",
             priority="high",
             assignee_id=fixer.id,
@@ -144,6 +147,6 @@ def ensure_bug_ticket(db: Session, project: Project, fixer: Employee, check: Che
             order=999,
         )
         db.add(project)
-    db.add(ticket)
+    db.add(work_item)
     db.flush()
-    return ticket
+    return work_item

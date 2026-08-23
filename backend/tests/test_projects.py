@@ -10,8 +10,8 @@ def test_board_flow_create_move_and_comment(client, company, project):
     employees = client.get(f"/companies/{company['id']}/employees").json()
     engineer = next(e for e in employees if e["role_key"] == "backend_engineer")
 
-    ticket = client.post(
-        f"/projects/{project['id']}/tickets",
+    work_item = client.post(
+        f"/projects/{project['id']}/work-items",
         json={
             "title": "Expose /sensors endpoint",
             "description": "Return every sensor as JSON.",
@@ -19,29 +19,29 @@ def test_board_flow_create_move_and_comment(client, company, project):
             "acceptance_criteria": ["GET /sensors returns 200"],
         },
     ).json()
-    assert ticket["key"] == "SENSOR-1"
-    assert ticket["status"] == "backlog"
+    assert work_item["key"] == "SENSOR-1"
+    assert work_item["status"] == "backlog"
 
-    moved = client.patch(f"/tickets/{ticket['id']}", json={"status": "in_progress"}).json()
+    moved = client.patch(f"/work-items/{work_item['id']}", json={"status": "in_progress"}).json()
     assert moved["status"] == "in_progress"
 
-    client.post(f"/tickets/{ticket['id']}/comments", json={"body": "Prioritise this one."})
-    detail = client.get(f"/tickets/{ticket['id']}").json()
+    client.post(f"/work-items/{work_item['id']}/comments", json={"body": "Prioritise this one."})
+    detail = client.get(f"/work-items/{work_item['id']}").json()
     assert detail["comments"][0]["body"] == "Prioritise this one."
     assert detail["acceptance_criteria"] == ["GET /sensors returns 200"]
 
 
 def test_invalid_status_is_rejected(client, project):
-    ticket = client.post(f"/projects/{project['id']}/tickets", json={"title": "x"}).json()
-    response = client.patch(f"/tickets/{ticket['id']}", json={"status": "shipped"})
+    work_item = client.post(f"/projects/{project['id']}/work-items", json={"title": "x"}).json()
+    response = client.patch(f"/work-items/{work_item['id']}", json={"status": "shipped"})
     assert response.status_code == 400
 
 
 def test_ticket_counts_group_by_status(client, project):
     for index in range(3):
-        client.post(f"/projects/{project['id']}/tickets", json={"title": f"T{index}"})
-    tickets = client.get(f"/projects/{project['id']}/tickets").json()
-    client.patch(f"/tickets/{tickets[0]['id']}", json={"status": "done"})
+        client.post(f"/projects/{project['id']}/work-items", json={"title": f"T{index}"})
+    work_items = client.get(f"/projects/{project['id']}/work-items").json()
+    client.patch(f"/work-items/{work_items[0]['id']}", json={"status": "done"})
 
     counts = client.get(f"/projects/{project['id']}").json()["counts"]
     assert counts["total"] == 3
@@ -64,22 +64,22 @@ def test_pending_tickets_are_ordered_and_filtered(client, company):
         f"/companies/{company['id']}/projects", json={"name": "Ordering", "brief": "b"}
     ).json()
     first = client.post(
-        f"/projects/{project['id']}/tickets", json={"title": "one", "status": "todo"}
+        f"/projects/{project['id']}/work-items", json={"title": "one", "status": "todo"}
     ).json()
-    client.post(f"/projects/{project['id']}/tickets", json={"title": "two", "status": "done"})
+    client.post(f"/projects/{project['id']}/work-items", json={"title": "two", "status": "done"})
     stalled = client.post(
-        f"/projects/{project['id']}/tickets", json={"title": "stalled", "status": "in_progress"}
+        f"/projects/{project['id']}/work-items", json={"title": "stalled", "status": "in_progress"}
     ).json()
     third = client.post(
-        f"/projects/{project['id']}/tickets", json={"title": "three", "status": "backlog"}
+        f"/projects/{project['id']}/work-items", json={"title": "three", "status": "backlog"}
     ).json()
 
-    from agents.engine import _pending_tickets
+    from agents.engine import ready_items
     from db import session
 
     db = session()
     try:
-        pending = _pending_tickets(db, project["id"])
+        pending = ready_items(db, project["id"])
     finally:
         db.close()
 
@@ -126,7 +126,7 @@ def test_outcome_note_explains_how_a_run_ended():
     open_tickets = [SimpleNamespace(key="ABC-2"), SimpleNamespace(key="ABC-3")]
     note = _outcome_note(1, open_tickets, [SimpleNamespace(key="ABC-4")], 2)
 
-    assert "1 ticket finished" in note
+    assert "1 item finished" in note
     assert "2 still open (ABC-2, ABC-3)" in note
     assert "run again" in note
     assert "1 blocked" in note
@@ -136,16 +136,16 @@ def test_outcome_note_explains_how_a_run_ended():
 def test_outcome_note_is_quiet_when_everything_landed():
     from agents.engine import _outcome_note
 
-    assert _outcome_note(4, [], [], 0) == "4 tickets finished."
+    assert _outcome_note(4, [], [], 0) == "4 items finished."
 
 
 def test_tickets_can_be_deleted(client, project):
-    ticket = client.post(f"/projects/{project['id']}/tickets", json={"title": "Junk"}).json()
+    work_item = client.post(f"/projects/{project['id']}/work-items", json={"title": "Junk"}).json()
 
-    assert client.delete(f"/tickets/{ticket['id']}").status_code == 204
-    assert client.get(f"/tickets/{ticket['id']}").status_code == 404
-    assert ticket["key"] not in [
-        t["key"] for t in client.get(f"/projects/{project['id']}/tickets").json()
+    assert client.delete(f"/work-items/{work_item['id']}").status_code == 204
+    assert client.get(f"/work-items/{work_item['id']}").status_code == 404
+    assert work_item["key"] not in [
+        t["key"] for t in client.get(f"/projects/{project['id']}/work-items").json()
     ]
 
 
@@ -166,67 +166,70 @@ def test_verify_command_must_pass_the_sandbox_rules(client, project):
 
 def test_failing_verification_reopens_a_ticket(client, company, project):
     """The platform's own check overrides what the employee claims."""
-    from agents.engine import verify_project
+    from agents.engine import verify
     from db import session
-    from models import Company, Project, Run, Ticket
+    from models import Company, Project, Run, WorkItem
 
     client.patch(f"/projects/{project['id']}", json={"verify_command": "python3 fails.py"})
     client.put(
         f"/projects/{project['id']}/file",
         json={"path": "fails.py", "content": "raise SystemExit(3)\n"},
     )
-    ticket = client.post(
-        f"/projects/{project['id']}/tickets", json={"title": "Claims to work", "status": "done"}
+    work_item = client.post(
+        f"/projects/{project['id']}/work-items", json={"title": "Claims to work", "status": "done"}
     ).json()
 
     db = session()
     try:
         project_row = db.get(Project, project["id"])
         company_row = db.get(Company, company["id"])
-        ticket_row = db.get(Ticket, ticket["id"])
+        item_row = db.get(WorkItem, work_item["id"])
         run = Run(company_id=company_row.id, project_id=project_row.id, status="running")
         db.add(run)
         db.flush()
-        verdict = verify_project(db, run, project_row, ticket_row, company_row)
+        verdict = verify(db, run, project_row, item_row, company_row)
         db.commit()
     finally:
         db.close()
 
-    assert verdict["exit_code"] == 3
-    detail = client.get(f"/tickets/{ticket['id']}").json()
+    assert verdict["ok"] is False
+    assert "exit 3" in verdict["summary"]
+    detail = client.get(f"/work-items/{work_item['id']}").json()
     verification = [c for c in detail["comments"] if c["author_label"] == "Verification"]
-    assert verification and "FAILED (exit 3)" in verification[0]["body"]
+    assert verification and "exit 3" in verification[0]["body"]
 
 
 def test_passing_verification_is_recorded(client, company, project):
-    from agents.engine import verify_project
+    from agents.engine import verify
     from db import session
-    from models import Company, Project, Run, Ticket
+    from models import Company, Project, Run, WorkItem
 
     client.patch(f"/projects/{project['id']}", json={"verify_command": "python3 ok.py"})
     client.put(
         f"/projects/{project['id']}/file", json={"path": "ok.py", "content": "print('ok')\n"}
     )
-    ticket = client.post(f"/projects/{project['id']}/tickets", json={"title": "Real work"}).json()
+    work_item = client.post(
+        f"/projects/{project['id']}/work-items", json={"title": "Real work"}
+    ).json()
 
     db = session()
     try:
         run = Run(company_id=company["id"], project_id=project["id"], status="running")
         db.add(run)
         db.flush()
-        verdict = verify_project(
+        verdict = verify(
             db,
             run,
             db.get(Project, project["id"]),
-            db.get(Ticket, ticket["id"]),
+            db.get(WorkItem, work_item["id"]),
             db.get(Company, company["id"]),
         )
         db.commit()
     finally:
         db.close()
 
-    assert verdict["exit_code"] == 0
-    detail = client.get(f"/tickets/{ticket['id']}").json()
+    assert verdict["ok"] is True
+    detail = client.get(f"/work-items/{work_item['id']}").json()
     assert any("passed" in c["body"] for c in detail["comments"])
 
 
@@ -259,7 +262,7 @@ def test_autofix_rejects_commands_the_sandbox_would_refuse(client, project):
 
 
 def test_check_result_extracts_error_lines():
-    from services.autofix import CheckResult
+    from services.autofix import CommandOutcome
 
     output = "\n".join(
         [
@@ -270,13 +273,13 @@ def test_check_result_extracts_error_lines():
             "2 issues found.",
         ]
     )
-    result = CheckResult(passed=False, command="dart analyze .", output=output)
+    result = CommandOutcome(passed=False, command="dart analyze .", output=output)
 
     errors = result.errors()
     assert len(errors) == 2
     assert all("error -" in line for line in errors)
     # The signature is order-independent, so a reshuffled log still counts as no progress.
-    reversed_result = CheckResult(
+    reversed_result = CommandOutcome(
         passed=False, command="dart analyze .", output="\n".join(reversed(output.splitlines()))
     )
     assert result.signature() == reversed_result.signature()
@@ -301,7 +304,7 @@ def test_error_snippets_quote_the_source_around_each_error(client, project):
     from db import session
     from models import Project
     from services import workspace
-    from services.autofix import CheckResult
+    from services.autofix import CommandOutcome
 
     client.put(
         f"/projects/{project['id']}/file",
@@ -318,7 +321,7 @@ def test_error_snippets_quote_the_source_around_each_error(client, project):
     finally:
         db.close()
 
-    result = CheckResult(
+    result = CommandOutcome(
         passed=False,
         command="dart analyze .",
         output="  error - lib/main.dart:15:3 - Undefined name 'Clipboard'.",

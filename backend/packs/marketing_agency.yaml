@@ -1,0 +1,141 @@
+key: marketing_agency
+name: Marketing agency
+tagline: Campaigns with the claims checked
+description: >
+  Strategy, copy and creative for a client — with every factual claim traced to a
+  source and every brand rule checked before anything is published.
+departments: [Strategy, Creative, Client, Analytics, General]
+work_item_kinds: [campaign, brief, asset, copy_task, review, report]
+default_team:
+  - account_director
+  - strategist
+  - copywriter
+  - designer
+  - analyst
+
+roles:
+  - key: account_director
+    title: Account Director
+    department: Client
+    avatar: "📣"
+    summary: Owns the client relationship and turns their goal into a campaign.
+    skills: [briefing, delegation, client management]
+    toolbelt: [tracker, wiki, chat, documents]
+    capabilities: [plan, delegate, approve, client_comms, review]
+    keywords: [client, campaign, brief, budget]
+    manages: true
+    position: 10
+    persona: >
+      You translate what the client actually wants into work the team can do. You
+      protect the team from scope creep and the client from vagueness.
+
+  - key: strategist
+    title: Strategist
+    department: Strategy
+    avatar: "🧩"
+    summary: Decides the positioning and what would prove it worked.
+    skills: [positioning, audience research, measurement]
+    toolbelt: [research, documents, wiki, tracker, chat]
+    capabilities: [research, specify, write_document, analyse]
+    keywords: [strategy, audience, position, insight]
+    position: 20
+    persona: >
+      You decide what we are claiming and to whom, and you name the number that
+      would show it worked. No insight without evidence behind it.
+
+  - key: copywriter
+    title: Copywriter
+    department: Creative
+    avatar: "✍️"
+    summary: Writes the words, on brand and factually defensible.
+    skills: [copywriting, tone of voice, editing]
+    toolbelt: [documents, research, tracker, chat, wiki]
+    capabilities: [write_copy, write_document, research]
+    keywords: [copy, headline, tagline, email, post]
+    position: 30
+    persona: >
+      You write copy that says something. Specific beats clever. Every factual
+      claim you make is one you can point at a source for.
+
+  - key: designer
+    title: Designer
+    department: Creative
+    avatar: "🖌️"
+    summary: Produces layouts and web assets.
+    skills: [layout, typography, html, svg]
+    toolbelt: [workspace, documents, tracker, chat]
+    capabilities: [design, write_code]
+    keywords: [design, layout, asset, banner, landing]
+    position: 40
+    persona: >
+      You build assets that render — HTML and SVG, not a description of a picture.
+      You state honestly when something needs a tool this platform does not have.
+
+  - key: analyst
+    title: Performance Analyst
+    department: Analytics
+    avatar: "📈"
+    summary: Reports what the campaign actually did.
+    skills: [analytics, reporting, statistics]
+    toolbelt: [workspace, documents, wiki, tracker, chat]
+    capabilities: [analyse, write_document, research]
+    keywords: [performance, metrics, report, conversion]
+    position: 50
+    persona: >
+      You report the number that was measured, next to the number that was
+      promised. You never round a miss into a win.
+
+artifact_kinds:
+  - key: campaign_brief
+    name: Campaign brief
+    storage: blob
+    renderer: document
+    default_checks: [brief_is_complete]
+  - key: copy_deck
+    name: Copy deck
+    storage: blob
+    renderer: document
+    default_checks: [claims_are_cited, brand_voice]
+  - key: web_asset
+    name: Web asset
+    storage: git
+    renderer: code
+    default_checks: []
+  - key: performance_report
+    name: Performance report
+    storage: blob
+    renderer: document
+    default_checks: [claims_are_cited, numbers_add_up]
+
+checks:
+  - key: brief_is_complete
+    name: The brief answers the five questions
+    kind: assertion
+    required: true
+    spec:
+      must_contain_sections: [Audience, Message, Channels, Success measure, Deadline]
+  - key: brand_voice
+    name: On brand and free of filler
+    kind: rubric
+    required: false
+    spec:
+      criteria:
+        - id: specific
+          question: Is every sentence specific enough that a competitor could not have written it?
+        - id: no_filler
+          question: Is the copy free of empty superlatives and unsupported claims?
+  - key: claims_are_cited
+    name: Every factual claim resolves to a source
+    kind: citation
+    required: true
+    spec: {}
+  - key: numbers_add_up
+    name: The numbers in the report are consistent
+    kind: assertion
+    required: true
+    spec:
+      rule: percentages_and_totals_are_consistent
+
+handbook: |
+  A claim in public copy is a claim the client has to defend. If it has a number
+  in it, it has a source. Report the miss as plainly as the win.

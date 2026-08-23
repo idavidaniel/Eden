@@ -1,9 +1,9 @@
 """Operational records: the activity feed and autonomous run history."""
 
-from sqlalchemy import JSON, BigInteger, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from .base import Base, IdMixin, TimestampMixin
+from .base import Base, BigSerial, IdMixin, TimestampMixin
 
 
 class Activity(Base, TimestampMixin):
@@ -11,10 +11,7 @@ class Activity(Base, TimestampMixin):
 
     __tablename__ = "activities"
 
-    # SQLite only auto-increments a plain INTEGER primary key, hence the variant.
-    seq: Mapped[int] = mapped_column(
-        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
-    )
+    seq: Mapped[int] = mapped_column(BigSerial, primary_key=True, autoincrement=True)
     company_id: Mapped[str] = mapped_column(
         ForeignKey("companies.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -58,7 +55,9 @@ class RunStep(Base, IdMixin, TimestampMixin):
         ForeignKey("runs.id", ondelete="CASCADE"), index=True, nullable=False
     )
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("employees.id", ondelete="SET NULL"))
-    ticket_id: Mapped[str | None] = mapped_column(ForeignKey("tickets.id", ondelete="SET NULL"))
+    work_item_id: Mapped[str | None] = mapped_column(
+        ForeignKey("work_items.id", ondelete="SET NULL")
+    )
     kind: Mapped[str] = mapped_column(String(40), default="work")
     reasoning: Mapped[str] = mapped_column(Text, default="")
     output: Mapped[str] = mapped_column(Text, default="")

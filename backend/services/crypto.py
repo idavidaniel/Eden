@@ -44,6 +44,20 @@ def verify_secret(value: str, stored: str) -> bool:
         return False
 
 
+def token_digest(value: str) -> str:
+    """Keyed digest for a high-entropy API token.
+
+    Tokens are 256 bits of randomness, so there is nothing to brute-force and a
+    slow KDF would only tax every authenticated request. Passwords still go
+    through scrypt above; this is for machine credentials only.
+    """
+    return hmac.new(_key(), value.encode(), hashlib.sha256).hexdigest()
+
+
+def digests_match(a: str, b: str) -> bool:
+    return hmac.compare_digest(a, b)
+
+
 def _key() -> bytes:
     return hashlib.sha256(get_settings().secret_key.encode()).digest()
 

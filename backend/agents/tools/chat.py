@@ -72,6 +72,7 @@ TOOLS = [
             {"channel": string("Channel name, e.g. general"), "limit": {"type": "integer"}},
             required=[],
         ),
+        read_only=True,
         handler=read_channel,
     ),
     Tool(

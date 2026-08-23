@@ -25,6 +25,10 @@ class Settings:
         default_factory=lambda: os.getenv("MODEL", "nvidia/nemotron-3.5-lightning-30b-a3b")
     )
     planner_model: str = field(default_factory=lambda: os.getenv("PLANNER_MODEL", ""))
+    # Asymmetric retrieval model, 1024 dimensions — inside pgvector's HNSW ceiling.
+    embedding_model: str = field(
+        default_factory=lambda: os.getenv("EMBEDDING_MODEL", "nvidia/nv-embedqa-e5-v5")
+    )
     max_tokens: int = field(default_factory=lambda: int(os.getenv("MAX_TOKENS", "4096")))
     reasoning_budget: int = field(
         default_factory=lambda: int(os.getenv("REASONING_BUDGET", "4096"))

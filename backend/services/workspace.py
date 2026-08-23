@@ -12,34 +12,29 @@ from pathlib import Path
 
 from config import get_settings
 
+from . import runners
+
 MAX_FILE_BYTES = 400_000
 MAX_OUTPUT_CHARS = 6000
 DEFAULT_TIMEOUT = 60
 # Toolchains that legitimately take minutes (pub get, analysis, widget tests).
 SLOW_TIMEOUT = 420
 SLOW_COMMANDS = {"flutter", "dart"}
-# Programs an employee may start. Anything that touches the host or the wider
-# system is deliberately absent.
-ALLOWED_COMMANDS = {
-    "python",
-    "python3",
-    "pytest",
-    "node",
-    "ruff",
-    "mypy",
-    "flutter",
-    "dart",
-    "ls",
-    "cat",
-    "head",
-    "tail",
-    "wc",
-    "grep",
-    "find",
-    "git",
-    "tree",
-    "diff",
-}
+
+
+def allowed_commands() -> set[str]:
+    """Programs an employee may start right now.
+
+    Comes from the runner profiles, so the set grows when container runners are
+    switched on and shrinks back when they are not — rather than advertising a
+    toolchain that would fail the moment somebody used it.
+    """
+    return runners.allowed_programs()
+
+
+# Kept as a name because prompts and tool descriptions read it. It reflects what
+# is actually runnable in this deployment, not a hardcoded wish list.
+ALLOWED_COMMANDS = allowed_commands()
 IGNORED_DIRS = {
     ".git",
     "node_modules",
@@ -195,32 +190,55 @@ class Workspace:
         return self.git("show", "--stat", "--patch", sha)
 
     # --- running -------------------------------------------------------
-    def run(self, command: str, timeout: int | None = None, cwd: str = "") -> dict:
+    def run(
+        self,
+        command: str,
+        timeout: int | None = None,
+        cwd: str = "",
+        profile: str | None = None,
+    ) -> dict:
         """Run an allow-listed command inside the workspace.
 
         No shell: the command is tokenised and executed directly, so there is no
         redirection, piping or chaining, and only the allow-listed programs can be
         started at all. `cwd` picks a subdirectory - monorepos put each package in
         one, and without it `flutter pub get` has nothing to resolve.
+
+        A program the base image does not carry runs in its own container through
+        a runner profile, under the same allow-list, path guard and timeout.
         """
         argv, program = check_command(command)
         working_dir = self.resolve(cwd) if cwd else self.root
         if not working_dir.is_dir():
             raise WorkspaceError(f"No such directory: {cwd}")
 
+        chosen = runners.all_profiles().get(profile) if profile else runners.profile_for(program)
+        if chosen is None:
+            chosen = runners.all_profiles().get("host")
+        if chosen and chosen.containerised:
+            blocked = runners.unavailable_reason(chosen)
+            if blocked:
+                raise WorkspaceError(blocked)
+
         if timeout is None:
-            timeout = SLOW_TIMEOUT if program in SLOW_COMMANDS else DEFAULT_TIMEOUT
+            if chosen and chosen.timeout:
+                timeout = chosen.timeout
+            else:
+                timeout = SLOW_TIMEOUT if program in SLOW_COMMANDS else DEFAULT_TIMEOUT
 
         try:
-            result = subprocess.run(
-                argv,
-                cwd=working_dir,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
-            )
+            if chosen and chosen.containerised:
+                result = runners.run_in_container(chosen, argv, str(working_dir), timeout)
+            else:
+                result = subprocess.run(
+                    argv,
+                    cwd=working_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                    env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
+                )
         except subprocess.TimeoutExpired:
             raise WorkspaceError(
                 f"'{program}' did not finish within {timeout}s and was stopped."
@@ -232,6 +250,7 @@ class Workspace:
             "exit_code": result.returncode,
             "output": output[-MAX_OUTPUT_CHARS:] or "(no output)",
             "truncated": len(output) > MAX_OUTPUT_CHARS,
+            "profile": chosen.key if chosen else "host",
         }
 
 
@@ -249,9 +268,15 @@ def check_command(command: str) -> tuple[list[str], str]:
         raise WorkspaceError("Empty command.")
 
     program = Path(argv[0]).name
-    if program not in ALLOWED_COMMANDS:
+    available = allowed_commands()
+    if program not in available:
+        known = runners.profile_for(program)
+        if known:
+            raise WorkspaceError(
+                runners.unavailable_reason(known) or f"'{program}' is unavailable."
+            )
         raise WorkspaceError(
-            f"'{program}' is not allowed here. Allowed: {', '.join(sorted(ALLOWED_COMMANDS))}"
+            f"'{program}' is not allowed here. Allowed: {', '.join(sorted(available))}"
         )
     return argv, program
 

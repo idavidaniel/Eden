@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from db import get_db
-from models import Activity, Employee, Identity, Project, Ticket
+from models import Activity, Employee, Identity, Project, WorkItem
 from services import events
 from services import identity as identity_service
 
@@ -38,12 +38,12 @@ def get_employee(db: Session, employee_id: str) -> Employee:
 @router.get("/employees/{employee_id}")
 def read_employee(employee_id: str, db: Session = Depends(get_db)):
     employee = get_employee(db, employee_id)
-    tickets = list(
+    work_items = list(
         db.scalars(
-            select(Ticket)
-            .join(Project, Ticket.project_id == Project.id)
-            .where(Ticket.assignee_id == employee.id)
-            .order_by(Ticket.updated_at.desc())
+            select(WorkItem)
+            .join(Project, WorkItem.project_id == Project.id)
+            .where(WorkItem.assignee_id == employee.id)
+            .order_by(WorkItem.updated_at.desc())
             .limit(50)
         )
     )
@@ -59,7 +59,7 @@ def read_employee(employee_id: str, db: Session = Depends(get_db)):
     return {
         **serializers.employee(employee),
         "manager": serializers.employee(manager) if manager else None,
-        "tickets": [serializers.ticket(t) for t in tickets],
+        "work_items": [serializers.work_item(t) for t in work_items],
         "activity": [serializers.activity(a) for a in recent],
     }
 

@@ -11,9 +11,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from db import get_db, session
-from models import Channel, Company, Employee, Project, Ticket
-from services import events, identity
-from services.roles import DEFAULT_TEAM, get_role, list_roles
+from models import Channel, Company, Employee, Project, WorkItem
+from services import events, identity, packs
+from services import roles as roles_service
 
 from . import serializers
 
@@ -58,6 +58,8 @@ class EmployeeIn(BaseModel):
     persona: str | None = None
     skills: list[str] | None = None
     toolbelt: list[str] | None = None
+    capabilities: list[str] | None = None
+    model_policy: dict | None = None
     manager_id: str | None = None
     avatar: str | None = None
 
@@ -119,7 +121,7 @@ def generate_name(db: Session, company_id: str) -> str:
 
 
 def hire(db: Session, company: Company, spec: EmployeeIn) -> Employee:
-    role = get_role(spec.role_key)
+    role = roles_service.get_role(db, company, spec.role_key)
     employee = Employee(
         company_id=company.id,
         name=spec.name or generate_name(db, company.id),
@@ -130,8 +132,10 @@ def hire(db: Session, company: Company, spec: EmployeeIn) -> Employee:
         persona=spec.persona or role.persona,
         skills=spec.skills or list(role.skills),
         toolbelt=spec.toolbelt or list(role.toolbelt),
+        capabilities=spec.capabilities or list(role.capabilities or []),
         manager_id=spec.manager_id,
         avatar=spec.avatar or role.avatar,
+        model_policy=spec.model_policy or {},
     )
     db.add(employee)
     db.flush()
@@ -155,17 +159,17 @@ def company_stats(db: Session, company_id: str) -> dict:
     projects = db.scalar(
         select(func.count()).select_from(Project).where(Project.company_id == company_id)
     )
-    tickets = db.scalar(
+    work_items = db.scalar(
         select(func.count())
-        .select_from(Ticket)
-        .join(Project, Ticket.project_id == Project.id)
+        .select_from(WorkItem)
+        .join(Project, WorkItem.project_id == Project.id)
         .where(Project.company_id == company_id)
     )
     done = db.scalar(
         select(func.count())
-        .select_from(Ticket)
-        .join(Project, Ticket.project_id == Project.id)
-        .where(Project.company_id == company_id, Ticket.status == "done")
+        .select_from(WorkItem)
+        .join(Project, WorkItem.project_id == Project.id)
+        .where(Project.company_id == company_id, WorkItem.status == "done")
     )
     working = db.scalar(
         select(func.count())
@@ -175,7 +179,7 @@ def company_stats(db: Session, company_id: str) -> dict:
     return {
         "employees": employees or 0,
         "projects": projects or 0,
-        "tickets": tickets or 0,
+        "work_items": work_items or 0,
         "tickets_done": done or 0,
         "working_now": working or 0,
     }
@@ -188,21 +192,62 @@ def get_company(db: Session, company_id: str) -> Company:
     return company
 
 
-@router.get("/roles")
-def roles():
+def _role_json(role) -> dict:
+    return {
+        "key": role.key,
+        "title": role.title,
+        "department": role.department,
+        "avatar": role.avatar,
+        "summary": role.summary,
+        "skills": role.skills or [],
+        "toolbelt": role.toolbelt or [],
+        "capabilities": role.capabilities or [],
+        "manages": role.manages,
+        "persona": role.persona,
+    }
+
+
+@router.get("/packs")
+def list_industry_packs():
+    """Every industry a company can be founded in."""
     return [
         {
-            "key": role.key,
-            "title": role.title,
-            "department": role.department,
-            "avatar": role.avatar,
-            "summary": role.summary,
-            "skills": role.skills,
-            "toolbelt": role.toolbelt,
-            "persona": role.persona,
+            "key": pack.key,
+            "name": pack.name,
+            "tagline": pack.tagline,
+            "description": pack.description,
+            "departments": pack.departments,
+            "work_item_kinds": pack.work_item_kinds,
+            "default_team": pack.default_team,
+            "roles": [_role_json(role) for role in pack.roles],
+            "artifact_kinds": pack.artifact_kinds,
+            "checks": [
+                {"key": c["key"], "name": c.get("name", c["key"]), "kind": c["kind"]}
+                for c in pack.checks
+            ],
         }
-        for role in list_roles()
+        for pack in packs.list_packs()
     ]
+
+
+@router.get("/capabilities")
+def list_capabilities():
+    return [{"key": key, "label": label} for key, label in packs.CAPABILITY_LABELS.items()]
+
+
+@router.get("/roles")
+def roles(company_id: str | None = None, pack: str | None = None, db: Session = Depends(get_db)):
+    """Hireable roles: a company's own if one is named, otherwise a pack's."""
+    if company_id:
+        company = get_company(db, company_id)
+        return [_role_json(role) for role in roles_service.list_roles(db, company)]
+    return [_role_json(role) for role in packs.get_pack(pack).roles]
+
+
+@router.get("/companies/{company_id}/roles")
+def company_roles(company_id: str, db: Session = Depends(get_db)):
+    company = get_company(db, company_id)
+    return [_role_json(role) for role in roles_service.list_roles(db, company)]
 
 
 @router.get("/companies")
@@ -236,11 +281,15 @@ def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
         summary=f"founded {company.name}",
     )
 
-    team = payload.starting_team if payload.starting_team is not None else DEFAULT_TEAM
+    team = (
+        payload.starting_team
+        if payload.starting_team is not None
+        else roles_service.default_team(company)
+    )
     manager = None
     for role_key in team:
         employee = hire(db, company, EmployeeIn(role_key=role_key))
-        if get_role(role_key).manages and manager is None:
+        if roles_service.get_role(db, company, role_key).manages and manager is None:
             manager = employee
     if manager:
         for employee in db.scalars(select(Employee).where(Employee.company_id == company.id)):

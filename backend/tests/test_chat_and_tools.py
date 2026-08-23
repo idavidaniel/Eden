@@ -50,22 +50,22 @@ def test_tools_write_through_to_the_database(client, company, project):
         engineer = next(e for e in company_row.employees if e.role_key == "backend_engineer")
         ctx = ToolContext(db=db, company=company_row, employee=engineer, project=project_row)
 
-        assert "Created" in tools.execute("create_ticket", ctx, {"title": "Wire up CI"})
-        assert "Posted to #general" in tools.execute(
-            "post_message", ctx, {"body": "Starting on CI", "channel": "general"}
+        assert "Created" in str(tools.execute("create_ticket", ctx, {"title": "Wire up CI"}))
+        assert "Posted to #general" in str(
+            tools.execute("post_message", ctx, {"body": "Starting on CI", "channel": "general"})
         )
-        assert "Created" in tools.execute(
-            "write_file", ctx, {"path": "ci.yml", "content": "steps: []\n"}
+        assert "Created" in str(
+            tools.execute("write_file", ctx, {"path": "ci.yml", "content": "steps: []\n"})
         )
-        assert "Updated" in tools.execute(
-            "write_file", ctx, {"path": "ci.yml", "content": "steps: [build]\n"}
+        assert "Updated" in str(
+            tools.execute("write_file", ctx, {"path": "ci.yml", "content": "steps: [build]\n"})
         )
         db.commit()
     finally:
         db.close()
 
-    tickets = client.get(f"/projects/{project['id']}/tickets").json()
-    assert any(t["title"] == "Wire up CI" for t in tickets)
+    work_items = client.get(f"/projects/{project['id']}/work-items").json()
+    assert any(t["title"] == "Wire up CI" for t in work_items)
 
     feed = client.get(f"/companies/{company['id']}/activity").json()["events"]
     assert any(event["kind"] == "code.write" for event in feed)
@@ -82,7 +82,8 @@ def test_tool_access_is_denied_across_toolbelts(client, company, project):
         result = tools.execute("write_file", ctx, {"path": "x.py", "content": "x"})
     finally:
         db.close()
-    assert "do not have access" in result
+    assert result.ok is False
+    assert "do not have access" in result.text
 
 
 @pytest.mark.parametrize("method", ["tools/list", "initialize"])
@@ -128,7 +129,7 @@ def test_prompt_tells_an_employee_what_they_cannot_reach(client, company):
     finally:
         db.close()
 
-    assert "the issue tracker" in prompt
+    assert "the work tracker" in prompt
     assert "You do NOT have: workspace" in prompt
     assert "cannot write code" in prompt
     assert company["name"] in prompt
@@ -148,7 +149,7 @@ def test_employees_are_told_not_to_split_their_own_ticket(client, company):
         db.close()
 
     assert "never split" in prompt
-    assert "do not re-fetch" in prompt
+    assert "already current" in prompt
     # Engineers are told which toolchains the sandbox actually has.
     assert "The workspace can run:" in prompt
     assert "flutter" in prompt
@@ -190,9 +191,9 @@ def test_edit_file_replaces_one_unique_snippet(client, company, project):
     finally:
         db.close()
 
-    assert "Edited app.dart" in ok
-    assert "No match" in missing
-    assert "2 matches" in ambiguous
+    assert "Edited app.dart" in ok.text
+    assert missing.ok is False and "No match" in missing.text
+    assert ambiguous.ok is False and "2 matches" in ambiguous.text
 
     content = client.get(f"/projects/{project['id']}/file", params={"path": "app.dart"}).json()
     assert content["content"].startswith("import 'b.dart';")

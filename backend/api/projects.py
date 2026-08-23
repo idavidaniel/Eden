@@ -1,4 +1,4 @@
-"""Projects, the ticket board, and autonomous runs."""
+"""Projects, the work_item board, and autonomous runs."""
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from agents import engine
 from db import get_db
-from models import Channel, Employee, Project, Run, RunStep, Ticket, TicketComment
+from models import Channel, Employee, Project, Run, RunStep, WorkItem, WorkItemComment
 from models.work import TICKET_STATUSES
 from services import events, workspace
 from services.identity import slugify
@@ -35,9 +35,11 @@ class ProjectPatch(BaseModel):
     verify_command: str | None = None
 
 
-class TicketIn(BaseModel):
+class WorkItemIn(BaseModel):
     title: str
     description: str = ""
+    # `kind` comes from the company's industry pack. `type` is the old name.
+    kind: str | None = None
     type: str = "task"
     status: str = "backlog"
     priority: str = "medium"
@@ -45,7 +47,7 @@ class TicketIn(BaseModel):
     acceptance_criteria: list[str] = []
 
 
-class TicketPatch(BaseModel):
+class WorkItemPatch(BaseModel):
     title: str | None = None
     description: str | None = None
     status: str | None = None
@@ -72,9 +74,9 @@ def get_project(db: Session, project_id: str) -> Project:
 
 def project_counts(db: Session, project_id: str) -> dict:
     rows = db.execute(
-        select(Ticket.status, func.count())
-        .where(Ticket.project_id == project_id)
-        .group_by(Ticket.status)
+        select(WorkItem.status, func.count())
+        .where(WorkItem.project_id == project_id)
+        .group_by(WorkItem.status)
     ).all()
     counts = {status: 0 for status in TICKET_STATUSES}
     counts.update({status: count for status, count in rows})
@@ -187,128 +189,136 @@ def update_project(project_id: str, payload: ProjectPatch, db: Session = Depends
     return serializers.project(project, project_counts(db, project.id))
 
 
-@router.get("/projects/{project_id}/tickets")
+@router.get("/projects/{project_id}/work-items")
+@router.get("/projects/{project_id}/tickets", include_in_schema=False)
 def list_tickets(project_id: str, db: Session = Depends(get_db)):
     get_project(db, project_id)
     rows = list(
         db.scalars(
-            select(Ticket).where(Ticket.project_id == project_id).order_by(Ticket.order, Ticket.key)
+            select(WorkItem)
+            .where(WorkItem.project_id == project_id)
+            .order_by(WorkItem.order, WorkItem.key)
         )
     )
-    return [serializers.ticket(row) for row in rows]
+    return [serializers.work_item(row) for row in rows]
 
 
-@router.post("/projects/{project_id}/tickets", status_code=201)
-def create_ticket(project_id: str, payload: TicketIn, db: Session = Depends(get_db)):
+@router.post("/projects/{project_id}/work-items", status_code=201)
+@router.post("/projects/{project_id}/tickets", status_code=201, include_in_schema=False)
+def create_ticket(project_id: str, payload: WorkItemIn, db: Session = Depends(get_db)):
     project = get_project(db, project_id)
     project.ticket_counter += 1
-    ticket = Ticket(
+    work_item = WorkItem(
         project_id=project.id,
         key=f"{project.key}-{project.ticket_counter}",
         title=payload.title,
         description=payload.description,
-        type=payload.type,
+        kind=payload.kind or payload.type,
         status=payload.status,
         priority=payload.priority,
         assignee_id=payload.assignee_id,
         acceptance_criteria=payload.acceptance_criteria,
         order=project.ticket_counter,
     )
-    db.add(ticket)
+    db.add(work_item)
     db.add(project)
     events.record(
         db,
         company_id=project.company_id,
         project_id=project.id,
         actor="You",
-        kind="ticket.created",
-        summary=f"created {ticket.key}: {ticket.title}",
-        payload={"key": ticket.key},
+        kind="work_item.created",
+        summary=f"created {work_item.key}: {work_item.title}",
+        payload={"key": work_item.key},
     )
     db.commit()
-    return serializers.ticket(ticket)
+    return serializers.work_item(work_item)
 
 
-@router.get("/tickets/{ticket_id}")
-def read_ticket(ticket_id: str, db: Session = Depends(get_db)):
-    ticket = db.get(Ticket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found.")
+@router.get("/work-items/{work_item_id}")
+@router.get("/tickets/{work_item_id}", include_in_schema=False)
+def read_ticket(work_item_id: str, db: Session = Depends(get_db)):
+    work_item = db.get(WorkItem, work_item_id)
+    if not work_item:
+        raise HTTPException(status_code=404, detail="WorkItem not found.")
     comments = list(
         db.scalars(
-            select(TicketComment)
-            .where(TicketComment.ticket_id == ticket.id)
-            .order_by(TicketComment.created_at)
+            select(WorkItemComment)
+            .where(WorkItemComment.work_item_id == work_item.id)
+            .order_by(WorkItemComment.created_at)
         )
     )
     steps = list(
         db.scalars(
-            select(RunStep).where(RunStep.ticket_id == ticket.id).order_by(RunStep.created_at)
+            select(RunStep).where(RunStep.work_item_id == work_item.id).order_by(RunStep.created_at)
         )
     )
     return {
-        **serializers.ticket(ticket, comments),
+        **serializers.work_item(work_item, comments),
         "steps": [serializers.run_step(step) for step in steps],
     }
 
 
-@router.patch("/tickets/{ticket_id}")
-def update_ticket(ticket_id: str, payload: TicketPatch, db: Session = Depends(get_db)):
-    ticket = db.get(Ticket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found.")
+@router.patch("/work-items/{work_item_id}")
+@router.patch("/tickets/{work_item_id}", include_in_schema=False)
+def update_ticket(work_item_id: str, payload: WorkItemPatch, db: Session = Depends(get_db)):
+    work_item = db.get(WorkItem, work_item_id)
+    if not work_item:
+        raise HTTPException(status_code=404, detail="WorkItem not found.")
     changes = payload.model_dump(exclude_unset=True)
     if "status" in changes and changes["status"] not in TICKET_STATUSES:
         raise HTTPException(status_code=400, detail=f"status must be one of {TICKET_STATUSES}")
     for key, value in changes.items():
-        setattr(ticket, key, value)
-    db.add(ticket)
+        setattr(work_item, key, value)
+    db.add(work_item)
     events.record(
         db,
-        company_id=ticket.project.company_id,
-        project_id=ticket.project_id,
+        company_id=work_item.project.company_id,
+        project_id=work_item.project_id,
         actor="You",
-        kind="ticket.updated",
-        summary=f"updated {ticket.key}: {', '.join(changes) or 'no change'}",
-        payload={"key": ticket.key, "status": ticket.status},
+        kind="work_item.updated",
+        summary=f"updated {work_item.key}: {', '.join(changes) or 'no change'}",
+        payload={"key": work_item.key, "status": work_item.status},
     )
     db.commit()
-    return serializers.ticket(ticket)
+    return serializers.work_item(work_item)
 
 
-@router.delete("/tickets/{ticket_id}", status_code=204)
-def delete_ticket(ticket_id: str, db: Session = Depends(get_db)):
-    ticket = db.get(Ticket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found.")
+@router.delete("/work-items/{work_item_id}", status_code=204)
+@router.delete("/tickets/{work_item_id}", status_code=204, include_in_schema=False)
+def delete_ticket(work_item_id: str, db: Session = Depends(get_db)):
+    work_item = db.get(WorkItem, work_item_id)
+    if not work_item:
+        raise HTTPException(status_code=404, detail="WorkItem not found.")
     events.record(
         db,
-        company_id=ticket.project.company_id,
-        project_id=ticket.project_id,
+        company_id=work_item.project.company_id,
+        project_id=work_item.project_id,
         actor="You",
-        kind="ticket.deleted",
-        summary=f"deleted {ticket.key}: {ticket.title}",
-        payload={"key": ticket.key},
+        kind="work_item.deleted",
+        summary=f"deleted {work_item.key}: {work_item.title}",
+        payload={"key": work_item.key},
     )
-    db.delete(ticket)
+    db.delete(work_item)
     db.commit()
 
 
-@router.post("/tickets/{ticket_id}/comments", status_code=201)
-def comment_ticket(ticket_id: str, payload: CommentIn, db: Session = Depends(get_db)):
-    ticket = db.get(Ticket, ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found.")
-    comment = TicketComment(ticket_id=ticket.id, author_label="You", body=payload.body)
+@router.post("/work-items/{work_item_id}/comments", status_code=201)
+@router.post("/tickets/{work_item_id}/comments", status_code=201, include_in_schema=False)
+def comment_ticket(work_item_id: str, payload: CommentIn, db: Session = Depends(get_db)):
+    work_item = db.get(WorkItem, work_item_id)
+    if not work_item:
+        raise HTTPException(status_code=404, detail="WorkItem not found.")
+    comment = WorkItemComment(work_item_id=work_item.id, author_label="You", body=payload.body)
     db.add(comment)
     events.record(
         db,
-        company_id=ticket.project.company_id,
-        project_id=ticket.project_id,
+        company_id=work_item.project.company_id,
+        project_id=work_item.project_id,
         actor="You",
-        kind="ticket.comment",
-        summary=f"commented on {ticket.key}",
-        payload={"key": ticket.key, "body": payload.body[:400]},
+        kind="work_item.comment",
+        summary=f"commented on {work_item.key}",
+        payload={"key": work_item.key, "body": payload.body[:400]},
     )
     db.commit()
     return {

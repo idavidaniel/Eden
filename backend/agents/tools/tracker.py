@@ -2,9 +2,10 @@
 
 from sqlalchemy import select
 
-from models import Employee, Ticket, TicketComment
-from models.work import TICKET_STATUSES, TICKET_TYPES
+from models import Employee, WorkItem, WorkItemComment
+from models.work import WORK_ITEM_STATUSES
 from services import events
+from services.packs import kinds_for
 
 from .base import Tool, ToolContext, obj, string
 
@@ -24,21 +25,25 @@ def _next_key(ctx: ToolContext) -> str:
 
 def list_tickets(ctx: ToolContext, status: str = "", assignee: str = "") -> str:
     project = _require_project(ctx)
-    query = select(Ticket).where(Ticket.project_id == project.id).order_by(Ticket.order, Ticket.key)
+    query = (
+        select(WorkItem)
+        .where(WorkItem.project_id == project.id)
+        .order_by(WorkItem.order, WorkItem.key)
+    )
     if status:
-        query = query.where(Ticket.status == status)
-    tickets = list(ctx.db.scalars(query))
+        query = query.where(WorkItem.status == status)
+    work_items = list(ctx.db.scalars(query))
     if assignee:
-        tickets = [t for t in tickets if t.assignee_id == assignee]
-    if not tickets:
-        return "No tickets match."
+        work_items = [t for t in work_items if t.assignee_id == assignee]
+    if not work_items:
+        return "No work_items match."
     names = {
         e.id: e.name
         for e in ctx.db.scalars(select(Employee).where(Employee.company_id == ctx.company.id))
     }
     return "\n".join(
         f"{t.key} [{t.status}] {t.title} — {names.get(t.assignee_id, 'unassigned')}"
-        for t in tickets
+        for t in work_items
     )
 
 
@@ -46,24 +51,24 @@ def create_ticket(
     ctx: ToolContext,
     title: str,
     description: str = "",
-    type: str = "task",
+    kind: str = "task",
     role_hint: str = "",
     priority: str = "medium",
 ) -> str:
     project = _require_project(ctx)
-    ticket = Ticket(
+    work_item = WorkItem(
         project_id=project.id,
         key=_next_key(ctx),
         title=title[:240],
         description=description,
-        type=type if type in TICKET_TYPES else "task",
+        kind=kind if kind in kinds_for(ctx.company) else "task",
         status="backlog",
         priority=priority,
         reporter_id=ctx.employee.id,
         role_hint=role_hint or None,
         order=project.ticket_counter,
     )
-    ctx.db.add(ticket)
+    ctx.db.add(work_item)
     ctx.db.flush()
     events.record(
         ctx.db,
@@ -72,26 +77,28 @@ def create_ticket(
         run_id=ctx.run.id if ctx.run else None,
         employee_id=ctx.employee.id,
         actor=ctx.actor,
-        kind="ticket.created",
-        summary=f"created {ticket.key}: {ticket.title}",
-        payload={"ticket_id": ticket.id, "key": ticket.key},
+        kind="work_item.created",
+        summary=f"created {work_item.key}: {work_item.title}",
+        payload={"work_item_id": work_item.id, "key": work_item.key},
     )
-    return f"Created {ticket.key}: {ticket.title}"
+    return f"Created {work_item.key}: {work_item.title}"
 
 
 def update_ticket(
     ctx: ToolContext, key: str, status: str = "", assignee_name: str = "", result: str = ""
 ) -> str:
     project = _require_project(ctx)
-    ticket = ctx.db.scalar(select(Ticket).where(Ticket.project_id == project.id, Ticket.key == key))
-    if not ticket:
-        return f"No ticket named {key}."
+    work_item = ctx.db.scalar(
+        select(WorkItem).where(WorkItem.project_id == project.id, WorkItem.key == key)
+    )
+    if not work_item:
+        return f"No work_item named {key}."
 
     changes = []
     if status:
-        if status not in TICKET_STATUSES:
-            return f"Invalid status. Use one of: {', '.join(TICKET_STATUSES)}"
-        ticket.status = status
+        if status not in WORK_ITEM_STATUSES:
+            return f"Invalid status. Use one of: {', '.join(WORK_ITEM_STATUSES)}"
+        work_item.status = status
         changes.append(f"status→{status}")
     if assignee_name:
         employee = ctx.db.scalar(
@@ -101,13 +108,13 @@ def update_ticket(
         )
         if not employee:
             return f"No colleague matches '{assignee_name}'."
-        ticket.assignee_id = employee.id
+        work_item.assignee_id = employee.id
         changes.append(f"assignee→{employee.name}")
     if result:
-        ticket.result = result
+        work_item.result = result
         changes.append("result recorded")
 
-    ctx.db.add(ticket)
+    ctx.db.add(work_item)
     events.record(
         ctx.db,
         company_id=ctx.company.id,
@@ -115,21 +122,23 @@ def update_ticket(
         run_id=ctx.run.id if ctx.run else None,
         employee_id=ctx.employee.id,
         actor=ctx.actor,
-        kind="ticket.updated",
-        summary=f"updated {ticket.key}: {', '.join(changes) or 'no change'}",
-        payload={"ticket_id": ticket.id, "key": ticket.key, "status": ticket.status},
+        kind="work_item.updated",
+        summary=f"updated {work_item.key}: {', '.join(changes) or 'no change'}",
+        payload={"work_item_id": work_item.id, "key": work_item.key, "status": work_item.status},
     )
-    return f"{ticket.key}: {', '.join(changes) or 'nothing changed'}"
+    return f"{work_item.key}: {', '.join(changes) or 'nothing changed'}"
 
 
 def comment_ticket(ctx: ToolContext, key: str, body: str) -> str:
     project = _require_project(ctx)
-    ticket = ctx.db.scalar(select(Ticket).where(Ticket.project_id == project.id, Ticket.key == key))
-    if not ticket:
-        return f"No ticket named {key}."
+    work_item = ctx.db.scalar(
+        select(WorkItem).where(WorkItem.project_id == project.id, WorkItem.key == key)
+    )
+    if not work_item:
+        return f"No work_item named {key}."
     ctx.db.add(
-        TicketComment(
-            ticket_id=ticket.id, author_id=ctx.employee.id, author_label=ctx.actor, body=body
+        WorkItemComment(
+            work_item_id=work_item.id, author_id=ctx.employee.id, author_label=ctx.actor, body=body
         )
     )
     events.record(
@@ -139,18 +148,18 @@ def comment_ticket(ctx: ToolContext, key: str, body: str) -> str:
         run_id=ctx.run.id if ctx.run else None,
         employee_id=ctx.employee.id,
         actor=ctx.actor,
-        kind="ticket.comment",
-        summary=f"commented on {ticket.key}",
-        payload={"ticket_id": ticket.id, "key": ticket.key, "body": body[:400]},
+        kind="work_item.comment",
+        summary=f"commented on {work_item.key}",
+        payload={"work_item_id": work_item.id, "key": work_item.key, "body": body[:400]},
     )
-    return f"Commented on {ticket.key}."
+    return f"Commented on {work_item.key}."
 
 
 TOOLS = [
     Tool(
         name="list_tickets",
         group="tracker",
-        description="List tickets on the current project, optionally filtered by status.",
+        description="List work_items on the current project, optionally filtered by status.",
         parameters=obj(
             {
                 "status": string(
@@ -160,17 +169,18 @@ TOOLS = [
             },
             required=[],
         ),
+        read_only=True,
         handler=list_tickets,
     ),
     Tool(
         name="create_ticket",
         group="tracker",
-        description="Create a ticket in the current project.",
+        description="Create a work_item in the current project.",
         parameters=obj(
             {
                 "title": string("Short imperative title"),
                 "description": string("What must be done, and how it will be verified"),
-                "type": string("epic, story, task, bug or chore"),
+                "kind": string("Kind of work item, e.g. task, bug, matter or research_question"),
                 "role_hint": string("Role best suited to this work, e.g. backend_engineer"),
                 "priority": string("low, medium or high"),
             },
@@ -181,10 +191,10 @@ TOOLS = [
     Tool(
         name="update_ticket",
         group="tracker",
-        description="Change a ticket's status, assignee, or record its result.",
+        description="Change a work_item's status, assignee, or record its result.",
         parameters=obj(
             {
-                "key": string("Ticket key, e.g. APOLLO-3"),
+                "key": string("WorkItem key, e.g. APOLLO-3"),
                 "status": string("backlog, todo, in_progress, in_review, done or blocked"),
                 "assignee_name": string("Colleague's name to assign it to"),
                 "result": string("Short summary of the outcome"),
@@ -196,8 +206,8 @@ TOOLS = [
     Tool(
         name="comment_ticket",
         group="tracker",
-        description="Add a comment to a ticket, visible to the whole team.",
-        parameters=obj({"key": string("Ticket key"), "body": string("Comment text")}),
+        description="Add a comment to a work_item, visible to the whole team.",
+        parameters=obj({"key": string("WorkItem key"), "body": string("Comment text")}),
         handler=comment_ticket,
     ),
 ]

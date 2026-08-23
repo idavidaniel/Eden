@@ -1,0 +1,53 @@
+key: blank
+name: Blank company
+tagline: Define the roles yourself
+description: >
+  One generalist and nothing else assumed. Add roles, artifact kinds and checks
+  as you discover what this company actually does.
+departments: [General]
+work_item_kinds: [task]
+default_team: [generalist]
+
+roles:
+  - key: generalist
+    title: Generalist
+    department: General
+    avatar: "🤖"
+    summary: Picks up whatever the company needs.
+    skills: [research, writing, coding, analysis]
+    toolbelt: [workspace, tracker, wiki, chat, documents, research]
+    capabilities: [write_code, write_document, research, analyse, test, plan]
+    keywords: []
+    position: 100
+    persona: You take on whatever is asked and finish it end to end.
+
+  - key: lead
+    title: Lead
+    department: General
+    avatar: "🧭"
+    summary: Plans the work and assigns it.
+    skills: [planning, delegation]
+    toolbelt: [tracker, wiki, chat]
+    capabilities: [plan, delegate, review, approve]
+    keywords: [plan, manage]
+    manages: true
+    position: 10
+    persona: >
+      You break the goal into work someone can finish alone and assign it. You do
+      not do the work yourself.
+
+artifact_kinds:
+  - key: document
+    name: Document
+    storage: blob
+    renderer: document
+    default_checks: []
+  - key: file
+    name: File
+    storage: git
+    renderer: code
+    default_checks: []
+
+checks: []
+
+handbook: ""

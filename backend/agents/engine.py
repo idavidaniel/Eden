@@ -1,40 +1,36 @@
-"""The company runtime: plan a brief, work the tickets, review, wrap up.
+"""The company runtime: plan a brief, work the items, verify, review, wrap up.
 
-A run is executed by one background worker thread. Every step writes to the
-database as it happens, so the dashboard's live feed is simply a tail of the
-activity table, and a crash mid-run leaves the tickets it already finished.
+A run is one way work gets done — the one you start by hand. The org clock is
+the other, and both funnel into the same turn loop in `runtime.py`. Every step
+writes to the database as it happens, so the dashboard's live feed is a tail of
+the activity table and a crash mid-run keeps whatever already finished.
+
+The rule this file exists to enforce: nobody's word is taken for anything. An
+employee can set their own item to done and the platform will still run the
+checks and reopen it.
 """
 
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from agents import prompts, tools
-from agents.llm import chat, structured_call
+from agents import context as context_builder
+from agents import prompts, reflect, runtime
+from agents.llm import structured_call
 from agents.tools.base import ToolContext
 from config import get_settings
 from db import session
-from models import (
-    Channel,
-    Document,
-    Employee,
-    Message,
-    Project,
-    Run,
-    RunStep,
-    Ticket,
-    TicketComment,
-)
-from services import autofix, events, workspace
-from services.roles import ROLES, get_role, match_role
+from models import Company, Employee, Project, Run, RunStep, WorkItem, WorkItemComment
+from models.work import OPEN_STATUSES
+from services import artifacts as artifact_service
+from services import autofix, events, ledger, packs, roles, workspace
+from services import checks as check_service
 
 log = logging.getLogger(__name__)
-
-# How many steps before the limit an employee is told to wrap up.
-WARN_BEFORE_STEPS = 3
 
 _executor: ThreadPoolExecutor | None = None
 _lock = threading.Lock()
@@ -50,48 +46,15 @@ def get_executor() -> ThreadPoolExecutor:
         return _executor
 
 
-# --------------------------------------------------------------------------
-# context helpers
-# --------------------------------------------------------------------------
-
-
-def _chat_log(db: Session, company_id: str, limit: int = 12) -> str:
-    rows = list(
-        db.scalars(
-            select(Message)
-            .join(Channel, Message.channel_id == Channel.id)
-            .where(Channel.company_id == company_id)
-            .order_by(Message.created_at.desc())
-            .limit(limit)
-        )
-    )
-    return "\n".join(f"{m.author_label}: {m.body}" for m in reversed(rows))
-
-
-def _wiki_index(db: Session, company_id: str) -> str:
-    rows = list(db.scalars(select(Document).where(Document.company_id == company_id)))
-    return "\n".join(f"- {d.title} (slug: {d.slug})" for d in rows)
-
-
-def _file_list(company_slug: str, project: Project) -> str:
-    space = workspace.for_project(company_slug, project.key)
-    space.init(project.name)
-    return "\n".join(f"- {entry['path']}" for entry in space.tree()[:60])
-
-
-def _pick(team: list[Employee], role_key: str) -> Employee | None:
-    """Find someone for a role, falling back to anyone who can plausibly do it."""
-    exact = [e for e in team if e.role_key == role_key]
-    if exact:
-        return exact[0]
-    role = get_role(role_key)
-    same_department = [
-        e for e in team if e.department == role.department and not get_role(e.role_key).manages
-    ]
-    if same_department:
-        return same_department[0]
-    doers = [e for e in team if not get_role(e.role_key).manages]
-    return doers[0] if doers else (team[0] if team else None)
+# Kept as the public name; the loop itself lives in runtime.py now.
+def run_agent_turn(
+    db: Session,
+    ctx: ToolContext,
+    task_prompt: str,
+    kind: str = "work",
+    max_steps: int | None = None,
+) -> RunStep:
+    return runtime.run_turn(db, ctx, task_prompt, kind=kind, max_steps=max_steps).step
 
 
 def _set_status(db: Session, employee: Employee, status: str, note: str = "") -> None:
@@ -102,127 +65,14 @@ def _set_status(db: Session, employee: Employee, status: str, note: str = "") ->
 
 
 # --------------------------------------------------------------------------
-# one employee's turn
+# planning
 # --------------------------------------------------------------------------
 
 
-def run_agent_turn(
-    db: Session,
-    ctx: ToolContext,
-    task_prompt: str,
-    kind: str = "work",
-    max_steps: int | None = None,
-) -> RunStep:
-    """Let an employee work with their tools until they stop calling them."""
-    settings = get_settings()
-    max_steps = max_steps or settings.max_agent_steps
-    colleagues = list(db.scalars(select(Employee).where(Employee.company_id == ctx.company.id)))
-
-    messages = [
-        {
-            "role": "system",
-            "content": prompts.employee_system_prompt(
-                ctx.company, ctx.employee, colleagues, ctx.project
-            ),
-        },
-        {"role": "user", "content": task_prompt},
-    ]
-    available = tools.for_employee(ctx.employee)
-    schemas = tools.schemas(available)
-
-    step = RunStep(
-        run_id=ctx.run.id if ctx.run else None,
-        employee_id=ctx.employee.id,
-        ticket_id=ctx.ticket.id if ctx.ticket else None,
-        kind=kind,
-        status="running",
-    )
-    if ctx.run:
-        db.add(step)
-        db.commit()
-
-    reasoning_parts: list[str] = []
-    calls_made: list[dict] = []
-    final_text = ""
-    hit_limit = False
-
-    for index in range(max_steps):
-        # Warn before the budget runs out so the turn lands instead of being cut
-        # off mid-thought.
-        if index == max_steps - WARN_BEFORE_STEPS:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        f"You have {WARN_BEFORE_STEPS} tool calls left. Finish now: save "
-                        "your work, commit it if you changed files, update the ticket, "
-                        "then reply with what you did."
-                    ),
-                }
-            )
-
-        reply = chat(messages, tools=schemas)
-        if reply.reasoning:
-            reasoning_parts.append(reply.reasoning)
-
-        if not reply.tool_calls:
-            final_text = reply.content
-            break
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": reply.content or None,
-                "tool_calls": [
-                    {
-                        "id": call["id"],
-                        "type": "function",
-                        "function": {"name": call["name"], "arguments": _dumps(call["arguments"])},
-                    }
-                    for call in reply.tool_calls
-                ],
-            }
-        )
-
-        for call in reply.tool_calls:
-            result = tools.execute(call["name"], ctx, call["arguments"])
-            db.commit()
-            calls_made.append(
-                {"name": call["name"], "arguments": call["arguments"], "result": result[:800]}
-            )
-            messages.append({"role": "tool", "tool_call_id": call["id"], "content": result[:4000]})
-            log.info("%s -> %s", call["name"], result[:120])
-    else:
-        hit_limit = True
-        final_text = (
-            f"Ran out of tool calls ({max_steps}) before finishing this task. "
-            "Raise MAX_AGENT_STEPS or split the ticket into smaller pieces."
-        )
-
-    step.reasoning = "\n\n".join(reasoning_parts)[:20000]
-    step.output = final_text[:8000]
-    step.tool_calls = calls_made
-    step.status = "step_limit" if hit_limit else "done"
-    if ctx.run:
-        db.add(step)
-        db.commit()
-    return step
-
-
-def _dumps(value) -> str:
-    import json
-
-    return json.dumps(value)
-
-
-# --------------------------------------------------------------------------
-# run phases
-# --------------------------------------------------------------------------
-
-
-def plan_run(db: Session, run: Run, project: Project, team: list[Employee]) -> list[Ticket]:
-    """The manager turns the brief into assigned tickets."""
-    manager = next((e for e in team if get_role(e.role_key).manages), None) or team[0]
+def plan_run(db: Session, run: Run, project: Project, team: list[Employee]) -> list[WorkItem]:
+    """The manager turns the brief into assigned, ordered work."""
+    company = project.company
+    manager = roles.manager_of(db, team, company) or team[0]
     _set_status(db, manager, "working", f"planning {project.key}")
 
     events.record(
@@ -235,50 +85,92 @@ def plan_run(db: Session, run: Run, project: Project, team: list[Employee]) -> l
         kind="run.planning",
         summary=f"is breaking down the brief for {project.name}",
     )
+    ledger.append(
+        db,
+        company_id=company.id,
+        project_id=project.id,
+        kind="brief.accepted",
+        actor_label=f"{manager.name} ({manager.title})",
+        subject_kind="project",
+        subject_id=project.id,
+        payload={"brief": project.brief[:2000], "run_id": run.id},
+    )
     db.commit()
 
-    role_keys = sorted({e.role_key for e in team})
-    messages = [
-        {
-            "role": "system",
-            "content": prompts.employee_system_prompt(project.company, manager, team, project),
-        },
-        {"role": "user", "content": prompts.planner_prompt(project, role_keys, team)},
-    ]
+    company_roles = roles.list_roles(db, company)
+    role_keys = sorted({person.role_key for person in team} | {role.key for role in company_roles})
+    kinds = packs.kinds_for(company)
+    capabilities = sorted(
+        {capability for role in company_roles for capability in (role.capabilities or [])}
+        | {c for person in team for c in (person.capabilities or [])}
+    ) or ["write_document"]
+
     plan = structured_call(
-        messages,
+        [
+            {
+                "role": "system",
+                "content": prompts.employee_system_prompt(company, manager, team, project),
+            },
+            {"role": "user", "content": prompts.planner_prompt(project, team, kinds, capabilities)},
+        ],
         name="submit_plan",
-        description="Submit the ticket breakdown for this project.",
-        parameters=prompts.plan_schema(role_keys),
+        description="Submit the breakdown of this project into work items.",
+        parameters=prompts.plan_schema(role_keys, kinds, capabilities),
+        model=None,
     )
 
-    created: list[Ticket] = []
-    limit = get_settings().max_tickets_per_run
-    for index, item in enumerate(plan.get("tickets", [])[:limit]):
-        role_key = item.get("role") or match_role(
-            f"{item.get('title', '')} {item.get('description', '')}"
+    raw_items = (plan.get("items") or plan.get("tickets") or [])[
+        : get_settings().max_tickets_per_run
+    ]
+    raw_items = _break_cycles(raw_items)
+
+    created: list[WorkItem] = []
+    for index, item in enumerate(raw_items):
+        capability = item.get("capability") or None
+        role_key = item.get("role") or roles.match_role(
+            db, company, f"{item.get('title', '')} {item.get('description', '')}"
         )
-        if role_key not in ROLES:
-            role_key = match_role(item.get("title", ""))
-        assignee = _pick(team, role_key)
+        assignee = roles.pick_for(
+            db, company, team, capability=capability, role_key=role_key
+        )
+        kind = item.get("kind") if item.get("kind") in kinds else (kinds[0] if kinds else "task")
+
         project.ticket_counter += 1
-        ticket = Ticket(
+        work_item = WorkItem(
             project_id=project.id,
             key=f"{project.key}-{project.ticket_counter}",
             title=str(item.get("title", "Untitled"))[:240],
             description=str(item.get("description", "")),
-            type=item.get("type", "task"),
+            kind=kind,
             status="todo",
             priority=item.get("priority", "medium"),
             assignee_id=assignee.id if assignee else None,
             reporter_id=manager.id,
             role_hint=role_key,
+            capability_hint=capability,
             acceptance_criteria=[str(c) for c in item.get("acceptance_criteria", [])][:8],
+            deliverable_spec=(
+                {"artifact_kind": item["deliverable"]} if item.get("deliverable") else {}
+            ),
             order=index,
         )
-        db.add(ticket)
+        db.add(work_item)
         db.flush()
-        created.append(ticket)
+        created.append(work_item)
+
+    # Dependencies come back as positions; turn them into keys now that the keys exist.
+    for index, item in enumerate(raw_items):
+        positions = [
+            position
+            for position in (item.get("depends_on") or [])
+            if isinstance(position, int) and 0 <= position < len(created) and position != index
+        ]
+        if positions:
+            created[index].depends_on = [created[position].key for position in positions]
+            db.add(created[index])
+
+    for work_item in created:
+        assignee = db.get(Employee, work_item.assignee_id) if work_item.assignee_id else None
         events.record(
             db,
             company_id=run.company_id,
@@ -286,13 +178,42 @@ def plan_run(db: Session, run: Run, project: Project, team: list[Employee]) -> l
             run_id=run.id,
             employee_id=manager.id,
             actor=f"{manager.name} ({manager.title})",
-            kind="ticket.created",
+            kind="work_item.created",
             summary=(
-                f"created {ticket.key}: {ticket.title}"
+                f"created {work_item.key}: {work_item.title}"
                 f" → {assignee.name if assignee else 'unassigned'}"
             ),
-            payload={"ticket_id": ticket.id, "key": ticket.key},
+            payload={"work_item_id": work_item.id, "key": work_item.key},
         )
+        ledger.append(
+            db,
+            company_id=company.id,
+            project_id=project.id,
+            kind="item.assigned",
+            actor_label=f"{manager.name} ({manager.title})",
+            subject_kind="work_item",
+            subject_id=work_item.id,
+            payload={
+                "key": work_item.key,
+                "title": work_item.title,
+                "assignee": assignee.name if assignee else None,
+                "capability": work_item.capability_hint,
+                "depends_on": work_item.depends_on,
+            },
+        )
+
+    ledger.append(
+        db,
+        company_id=company.id,
+        project_id=project.id,
+        kind="plan.produced",
+        actor_label=f"{manager.name} ({manager.title})",
+        subject_kind="project",
+        subject_id=project.id,
+        payload={"items": [w.key for w in created], "run_id": run.id},
+    )
+    check_service.ensure_project_checks(db, company, project)
+    _apply_deliverable_checks(db, company, project, created)
 
     project.status = "in_progress"
     db.add(project)
@@ -301,87 +222,219 @@ def plan_run(db: Session, run: Run, project: Project, team: list[Employee]) -> l
     return created
 
 
-def work_ticket(db: Session, run: Run, project: Project, ticket: Ticket, company) -> None:
-    employee = db.get(Employee, ticket.assignee_id) if ticket.assignee_id else None
+def _break_cycles(items: list[dict]) -> list[dict]:
+    """Drop dependency edges that would deadlock the board.
+
+    A planner occasionally produces a cycle. Rejecting the whole plan and asking
+    again costs a large model call; dropping the offending edges and recording it
+    costs nothing and leaves work that can actually start.
+    """
+    edges = {
+        index: {
+            position
+            for position in (item.get("depends_on") or [])
+            if isinstance(position, int) and 0 <= position < len(items) and position != index
+        }
+        for index, item in enumerate(items)
+    }
+    order: list[int] = []
+    permanent: set[int] = set()
+    temporary: set[int] = set()
+    removed: list[tuple[int, int]] = []
+
+    def visit(node: int) -> None:
+        if node in permanent:
+            return
+        temporary.add(node)
+        for dependency in sorted(edges[node]):
+            if dependency in temporary:
+                removed.append((node, dependency))
+                continue
+            visit(dependency)
+        temporary.discard(node)
+        permanent.add(node)
+        order.append(node)
+
+    for index in range(len(items)):
+        visit(index)
+
+    for node, dependency in removed:
+        edges[node].discard(dependency)
+        log.warning("dropped circular dependency %s → %s from the plan", node, dependency)
+
+    for index, item in enumerate(items):
+        item["depends_on"] = sorted(edges[index])
+    return items
+
+
+def _apply_deliverable_checks(
+    db: Session, company: Company, project: Project, items: list[WorkItem]
+) -> None:
+    """Bind the pack's checks for a deliverable kind to the item that produces it."""
+    from models import Check
+
+    kinds = {row.key: row for row in packs.artifact_kinds_for(db, company)}
+    templates = {
+        row.key: row
+        for row in db.scalars(
+            select(Check).where(
+                Check.company_id == company.id,
+                Check.project_id.is_(None),
+                Check.work_item_id.is_(None),
+            )
+        )
+    }
+    for work_item in items:
+        wanted = (work_item.deliverable_spec or {}).get("artifact_kind")
+        kind = kinds.get(wanted) if wanted else None
+        if not kind:
+            continue
+        for position, key in enumerate(kind.default_checks or []):
+            template = templates.get(key)
+            if not template:
+                continue
+            db.add(
+                Check(
+                    company_id=company.id,
+                    project_id=project.id,
+                    work_item_id=work_item.id,
+                    key=template.key,
+                    name=template.name,
+                    kind=template.kind,
+                    spec=dict(template.spec or {}),
+                    required=template.required,
+                    position=position,
+                    created_by="Plan",
+                )
+            )
+    db.flush()
+
+
+# --------------------------------------------------------------------------
+# doing one item
+# --------------------------------------------------------------------------
+
+
+def work_item_turn(
+    db: Session, run: Run | None, project: Project, work_item: WorkItem, company: Company
+) -> None:
+    employee = db.get(Employee, work_item.assignee_id) if work_item.assignee_id else None
     if not employee:
-        ticket.status = "blocked"
-        db.add(ticket)
+        work_item.status = "blocked"
+        work_item.blocked_reason = "Nobody is assigned to this."
+        db.add(work_item)
         db.commit()
         return
 
-    _set_status(db, employee, "working", f"{ticket.key}: {ticket.title}")
-    ticket.status = "in_progress"
-    db.add(ticket)
+    _set_status(db, employee, "working", f"{work_item.key}: {work_item.title}")
+    work_item.status = "in_progress"
+    db.add(work_item)
     events.record(
         db,
-        company_id=run.company_id,
+        company_id=company.id,
         project_id=project.id,
-        run_id=run.id,
+        run_id=run.id if run else None,
         employee_id=employee.id,
         actor=f"{employee.name} ({employee.title})",
-        kind="ticket.started",
-        summary=f"started {ticket.key}: {ticket.title}",
-        payload={"ticket_id": ticket.id, "key": ticket.key},
+        kind="work_item.started",
+        summary=f"started {work_item.key}: {work_item.title}",
+        payload={"work_item_id": work_item.id, "key": work_item.key},
     )
     db.commit()
 
     ctx = ToolContext(
-        db=db, company=company, employee=employee, project=project, ticket=ticket, run=run
+        db=db,
+        company=company,
+        employee=employee,
+        project=project,
+        work_item=work_item,
+        run=run,
     )
-    task_prompt = prompts.ticket_prompt(
-        ticket,
-        project,
-        _chat_log(db, company.id),
-        _wiki_index(db, company.id),
-        _file_list(company.slug, project),
+    outcome = runtime.run_turn(
+        db, ctx, prompts.work_item_prompt(work_item, project), kind="work", purpose="work"
     )
-    step = run_agent_turn(db, ctx, task_prompt, kind="work")
 
-    if step.status == "step_limit":
+    if outcome.hit_limit:
         db.add(
-            TicketComment(
-                ticket_id=ticket.id,
+            WorkItemComment(
+                work_item_id=work_item.id,
                 author_id=employee.id,
                 author_label=f"{employee.name} ({employee.title})",
-                body=step.output,
+                body=outcome.text,
             )
         )
         events.record(
             db,
             company_id=company.id,
             project_id=project.id,
-            run_id=run.id,
+            run_id=run.id if run else None,
             employee_id=employee.id,
             actor=f"{employee.name} ({employee.title})",
-            kind="ticket.step_limit",
-            summary=f"ran out of tool calls on {ticket.key}",
-            payload={"ticket_id": ticket.id, "key": ticket.key},
+            kind="work_item.step_limit",
+            summary=f"ran out of tool calls on {work_item.key}",
+            payload={"work_item_id": work_item.id, "key": work_item.key},
         )
         db.commit()
 
-    _autocommit(db, run, project, ticket, employee, company)
+    _autocommit(db, run, project, work_item, employee, company)
 
-    db.refresh(ticket)
-    if ticket.status == "in_progress":
-        ticket.status = "in_review"
-    if not ticket.result:
-        ticket.result = step.output[:2000]
-    db.add(ticket)
+    db.refresh(work_item)
+    if work_item.status == "in_progress":
+        work_item.status = "in_review"
+    if not work_item.result:
+        work_item.result = outcome.text[:2000]
+    db.add(work_item)
     db.commit()
 
-    verdict = verify_project(db, run, project, ticket, company)
-    if verdict and verdict["exit_code"] != 0:
-        db.refresh(ticket)
-        ticket.status = "todo"  # the build disagrees with the employee
-        db.add(ticket)
-        db.commit()
+    verdict = verify(db, run, project, work_item, company, author=employee)
+    if verdict and not verdict["ok"]:
+        db.refresh(work_item)
+        _reopen(db, work_item, company, project, run, verdict["summary"])
 
     _set_status(db, employee, "idle")
     db.commit()
 
 
+def _reopen(
+    db: Session,
+    work_item: WorkItem,
+    company: Company,
+    project: Project,
+    run: Run | None,
+    reason: str,
+) -> None:
+    """Send an item back with the reason attached, not silently."""
+    work_item.status = "blocked" if "waiting for a decision" in reason.lower() else "todo"
+    work_item.rework_count += 1
+    work_item.blocked_reason = reason[:2000] if work_item.status == "blocked" else None
+    db.add(work_item)
+    db.add(
+        WorkItemComment(
+            work_item_id=work_item.id,
+            author_label="Verification",
+            body=reason[:4000],
+        )
+    )
+    events.record(
+        db,
+        company_id=company.id,
+        project_id=project.id,
+        run_id=run.id if run else None,
+        actor="Verification",
+        kind="work_item.reopened",
+        summary=f"reopened {work_item.key}: {reason[:200]}",
+        payload={"work_item_id": work_item.id, "key": work_item.key},
+    )
+    db.commit()
+
+
 def _autocommit(
-    db: Session, run: Run | None, project: Project, ticket: Ticket, employee, company
+    db: Session,
+    run: Run | None,
+    project: Project,
+    work_item: WorkItem,
+    employee: Employee,
+    company: Company,
 ) -> None:
     """Commit whatever the employee left behind.
 
@@ -394,10 +447,11 @@ def _autocommit(
         space = workspace.for_project(company.slug, project.key)
         handle = employee.name.lower().replace(" ", ".")
         result = space.commit(
-            f"{ticket.key}: {ticket.title}", (employee.name, f"{handle}@{company.slug}.eden")
+            f"{work_item.key}: {work_item.title}",
+            (employee.name, f"{handle}@{company.slug}.eden"),
         )
     except Exception as exc:
-        log.warning("auto-commit failed for %s: %s", ticket.key, exc)
+        log.warning("auto-commit failed for %s: %s", work_item.key, exc)
         return
 
     if result.get("committed"):
@@ -409,150 +463,289 @@ def _autocommit(
             employee_id=employee.id,
             actor=f"{employee.name} ({employee.title})",
             kind="code.commit",
-            summary=f"committed {result['sha']}: {ticket.key} {ticket.title}"[:400],
+            summary=f"committed {result['sha']}: {work_item.key} {work_item.title}"[:400],
             payload=result,
         )
         db.commit()
 
 
-def verify_project(db: Session, run: Run, project: Project, ticket: Ticket, company) -> dict | None:
-    """Run the project's verification command and attach the verdict to the ticket.
+def verify(
+    db: Session,
+    run: Run | None,
+    project: Project,
+    work_item: WorkItem,
+    company: Company,
+    author: Employee | None = None,
+) -> dict | None:
+    """Run every check that applies, and attach the verdict to the item.
 
     This is the platform checking, not an employee reporting. Agents mark their
-    own work done far too readily - the mobile app in one run was closed while
+    own work done far too readily — a mobile app in one run was closed while
     `flutter pub get` could not even resolve its dependencies.
     """
-    if not project.verify_command:
+    check_service.ensure_project_checks(db, company, project)
+    results = check_service.run_for_work_item(
+        db,
+        company=company,
+        project=project,
+        work_item=work_item,
+        author=author,
+        run_id=run.id if run else None,
+    )
+    if not results:
+        db.commit()
         return None
 
-    space = workspace.for_project(company.slug, project.key)
-    try:
-        result = space.run(project.verify_command)
-    except Exception as exc:
-        result = {"command": project.verify_command, "exit_code": 1, "output": str(exc)}
-
-    passed = result["exit_code"] == 0
-    verdict = "passed" if passed else f"FAILED (exit {result['exit_code']})"
-    body = f"Verification `{result['command']}` {verdict}:\n\n{result['output'][-1500:]}"
-
-    db.add(TicketComment(ticket_id=ticket.id, author_label="Verification", body=body))
-    events.record(
-        db,
-        company_id=company.id,
-        project_id=project.id,
-        run_id=run.id,
-        kind="code.verify",
-        actor="Verification",
-        summary=f"{ticket.key}: `{project.verify_command}` → exit {result['exit_code']}",
-        payload={"ticket_id": ticket.id, "key": ticket.key, "exit_code": result["exit_code"]},
+    verdict = check_service.verdict_for(results)
+    body = "\n".join(f"[{result.status}] {result.detail}" for result in results)
+    db.add(
+        WorkItemComment(
+            work_item_id=work_item.id, author_label="Verification", body=body[:8000]
+        )
     )
     db.commit()
-    return result
+    return verdict
 
 
-def review_ticket(
-    db: Session, run: Run, project: Project, ticket: Ticket, company, reviewer: Employee
+# --------------------------------------------------------------------------
+# review
+# --------------------------------------------------------------------------
+
+
+def review_work_item(
+    db: Session,
+    run: Run | None,
+    project: Project,
+    work_item: WorkItem,
+    company: Company,
+    reviewer: Employee,
 ) -> None:
-    _set_status(db, reviewer, "working", f"reviewing {ticket.key}")
+    _set_status(db, reviewer, "working", f"reviewing {work_item.key}")
     ctx = ToolContext(
-        db=db, company=company, employee=reviewer, project=project, ticket=ticket, run=run
+        db=db,
+        company=company,
+        employee=reviewer,
+        project=project,
+        work_item=work_item,
+        run=run,
     )
-    ticket_block = (
-        f"{ticket.key}: {ticket.title}\nDescription: {ticket.description}\n"
-        f"Acceptance criteria:\n"
-        + ("\n".join(f"- {c}" for c in ticket.acceptance_criteria or []) or "- (none stated)")
+    criteria = (
+        "\n".join(f"- {item}" for item in work_item.acceptance_criteria or [])
+        or "- (none stated)"
+    )
+    item_block = (
+        f"{work_item.key}: {work_item.title}\n"
+        f"Description: {work_item.description}\n"
+        f"Acceptance criteria:\n{criteria}"
+    )
+    latest = check_service.latest_for_work_item(db, work_item.id)
+    check_block = (
+        "\n".join(f"[{result.status}] {result.detail}" for result in latest)
+        or "(no checks apply to this)"
     )
     prompt = prompts.REVIEW_PROMPT.format(
-        ticket_block=ticket_block,
-        result=ticket.result or "(nothing recorded)",
-        file_list=_file_list(company.slug, project),
+        item_block=item_block,
+        result=work_item.result or "(nothing recorded)",
+        check_block=check_block,
+        artifact_block=context_builder.artifact_excerpts(db, work_item) or "(nothing produced)",
     )
-    run_agent_turn(db, ctx, prompt, kind="review")
-    # Reviewers write too - a failing test they added is part of the record.
-    _autocommit(db, run, project, ticket, reviewer, company)
+    runtime.run_turn(db, ctx, prompt, kind="review", purpose="review")
+    # Reviewers write too — a failing test they added is part of the record.
+    _autocommit(db, run, project, work_item, reviewer, company)
 
-    db.refresh(ticket)
-    if ticket.status == "in_review":  # reviewer did not decide - accept it
-        ticket.status = "done"
-        db.add(ticket)
+    db.refresh(work_item)
+    if work_item.status == "in_review":  # reviewer did not decide — accept it
+        work_item.status = "done"
+        db.add(work_item)
     db.commit()
 
-    if ticket.status == "done":
-        verdict = verify_project(db, run, project, ticket, company)
-        if verdict and verdict["exit_code"] != 0:
-            db.refresh(ticket)
-            ticket.status = "todo"
-            db.add(ticket)
-            events.record(
-                db,
-                company_id=company.id,
-                project_id=project.id,
-                run_id=run.id,
-                kind="ticket.updated",
-                actor="Verification",
-                summary=f"reopened {ticket.key}: verification failed",
-                payload={"ticket_id": ticket.id, "key": ticket.key},
-            )
-            db.commit()
+    if work_item.status == "done":
+        verdict = verify(db, run, project, work_item, company, author=reviewer)
+        if verdict and not verdict["ok"]:
+            db.refresh(work_item)
+            _reopen(db, work_item, company, project, run, verdict["summary"])
+
+    db.refresh(work_item)
+    if work_item.status == "done":
+        close_out(db, company, project, work_item, run)
 
     _set_status(db, reviewer, "idle")
     db.commit()
 
 
-def wrap_up(db: Session, run: Run, project: Project, team: list[Employee], company) -> None:
-    """Manager posts the outcome; the writer documents it if there is one."""
-    manager = next((e for e in team if get_role(e.role_key).manages), None) or team[0]
-    tickets = list(db.scalars(select(Ticket).where(Ticket.project_id == project.id)))
-    done = [t for t in tickets if t.status == "done"]
-    summary_lines = "\n".join(f"- {t.key} [{t.status}] {t.title}" for t in tickets)
+def close_out(
+    db: Session, company: Company, project: Project, work_item: WorkItem, run: Run | None
+) -> None:
+    """Close an item: record it in the ledger and let its owner learn from it."""
+    from datetime import UTC, datetime
+
+    results = check_service.latest_for_work_item(db, work_item.id)
+    verdict = check_service.verdict_for(results) if results else {"ok": True, "summary": ""}
+    passed = bool(verdict["ok"])
+
+    work_item.closed_at = datetime.now(UTC)
+    db.add(work_item)
+    ledger.append(
+        db,
+        company_id=company.id,
+        project_id=project.id,
+        kind="item.closed",
+        actor_label="Platform",
+        subject_kind="work_item",
+        subject_id=work_item.id,
+        payload={
+            "key": work_item.key,
+            "status": work_item.status,
+            "checks_passed": passed,
+            "rework_count": work_item.rework_count,
+            "artifacts": [
+                {"name": a.name, "hash": a.content_hash, "version": a.version}
+                for a in artifact_service.for_project(db, project.id)
+                if a.work_item_id == work_item.id
+            ],
+        },
+    )
+    db.commit()
+
+    employee = db.get(Employee, work_item.assignee_id) if work_item.assignee_id else None
+    if not employee:
+        return
+
+    outcome = "shipped" if passed else "rejected"
+    if work_item.rework_count and passed:
+        outcome = "reopened"
+    try:
+        report = reflect.reflect_on_work_item(
+            db,
+            company=company,
+            employee=employee,
+            work_item=work_item,
+            project=project,
+            passed=passed,
+            outcome=outcome,
+            check_summary=verdict.get("summary", ""),
+            turn_summary=work_item.result or "",
+        )
+        reflect.consider_promotions(db, company)
+        db.commit()
+        events.record(
+            db,
+            company_id=company.id,
+            project_id=project.id,
+            employee_id=employee.id,
+            actor=f"{employee.name} ({employee.title})",
+            kind="memory.learned",
+            summary=(
+                f"recorded {report['stored']} memory item(s) from {work_item.key}"
+                + (
+                    " — the learning gate refused a procedure because the checks failed"
+                    if report.get("gate") == "refused"
+                    else ""
+                )
+            ),
+            payload=report,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        log.exception("reflection failed for %s", work_item.key)
+
+
+# --------------------------------------------------------------------------
+# wrap-up
+# --------------------------------------------------------------------------
+
+
+def wrap_up(
+    db: Session, run: Run, project: Project, team: list[Employee], company: Company
+) -> None:
+    """Manager posts the outcome; the platform records what actually landed."""
+    manager = roles.manager_of(db, team, company) or team[0]
+    items = list(db.scalars(select(WorkItem).where(WorkItem.project_id == project.id)))
+    done = [item for item in items if item.status == "done"]
+    summary_lines = "\n".join(f"- {item.key} [{item.status}] {item.title}" for item in items)
 
     ctx = ToolContext(db=db, company=company, employee=manager, project=project, run=run)
-    run_agent_turn(
+    runtime.run_turn(
         db,
         ctx,
         f"""The team has finished working on {project.name}.
 
-Ticket outcomes:
+Outcomes:
 {summary_lines}
 
 Post one short wrap-up message to #general covering what shipped and anything
 still open. Then stop.""",
         kind="wrap_up",
+        purpose="chat",
         max_steps=4,
     )
 
-    project.status = "delivered" if len(done) == len(tickets) and tickets else "in_progress"
+    project.status = "delivered" if items and len(done) == len(items) else "in_progress"
     db.add(project)
     db.commit()
 
 
 # --------------------------------------------------------------------------
-# run orchestration
+# the work graph
 # --------------------------------------------------------------------------
 
 
-# `in_progress` counts as pending: a run that was interrupted leaves tickets
-# mid-flight, and the next run has to pick them back up.
-PENDING_STATUSES = ["todo", "backlog", "in_progress"]
+def ready_items(db: Session, project_id: str) -> list[WorkItem]:
+    """Items nothing is blocking, in board order.
 
-
-def _pending_tickets(db: Session, project_id: str) -> list[Ticket]:
-    """Tickets still waiting for someone, in board order."""
-    return list(
+    `in_progress` counts as pending: a run interrupted mid-flight leaves items
+    there, and the next pass has to pick them back up.
+    """
+    everything = list(
         db.scalars(
-            select(Ticket)
-            .where(Ticket.project_id == project_id, Ticket.status.in_(PENDING_STATUSES))
-            .order_by(Ticket.order, Ticket.key)
+            select(WorkItem)
+            .where(WorkItem.project_id == project_id)
+            .order_by(WorkItem.order, WorkItem.key)
         )
     )
+    by_key = {item.key: item for item in everything}
+    ready = []
+    for item in everything:
+        if item.status not in OPEN_STATUSES:
+            continue
+        unmet = [
+            key
+            for key in (item.depends_on or [])
+            if key in by_key and by_key[key].status != "done"
+        ]
+        if unmet:
+            continue
+        ready.append(item)
+    return ready
+
+
+def blocked_by_dependencies(db: Session, project_id: str) -> list[dict]:
+    """Which items are waiting, and on what. Silence here used to be the bug."""
+    everything = list(
+        db.scalars(select(WorkItem).where(WorkItem.project_id == project_id))
+    )
+    by_key = {item.key: item for item in everything}
+    waiting = []
+    for item in everything:
+        if item.status not in OPEN_STATUSES:
+            continue
+        unmet = [
+            key
+            for key in (item.depends_on or [])
+            if key in by_key and by_key[key].status != "done"
+        ]
+        if unmet:
+            waiting.append({"key": item.key, "title": item.title, "waiting_on": unmet})
+    return waiting
 
 
 def _count_done(db: Session, project_id: str) -> int:
     return (
         db.scalar(
             select(func.count())
-            .select_from(Ticket)
-            .where(Ticket.project_id == project_id, Ticket.status == "done")
+            .select_from(WorkItem)
+            .where(WorkItem.project_id == project_id, WorkItem.status == "done")
         )
         or 0
     )
@@ -560,29 +753,27 @@ def _count_done(db: Session, project_id: str) -> int:
 
 def _outcome_note(done: int, unfinished: list, blocked: list, truncated: int) -> str:
     """One sentence the dashboard can show about how the run ended."""
-    parts = [f"{done} ticket{'s' if done != 1 else ''} finished"]
+    parts = [f"{done} item{'s' if done != 1 else ''} finished"]
     if unfinished:
-        keys = ", ".join(t.key for t in unfinished[:4])
+        keys = ", ".join(item.key for item in unfinished[:4])
         parts.append(f"{len(unfinished)} still open ({keys}) - run again to continue them")
     if blocked:
         parts.append(f"{len(blocked)} blocked, needs you")
     if truncated:
         parts.append(
             f"{truncated} turn{'s' if truncated != 1 else ''} ran out of tool calls "
-            "(raise MAX_AGENT_STEPS or use smaller tickets)"
+            "(raise MAX_AGENT_STEPS or use smaller items)"
         )
     return "; ".join(parts) + "."
 
 
 def _cancelled(db: Session, run_id: str) -> bool:
-    status = db.scalar(select(Run.status).where(Run.id == run_id))
-    return status in {"cancelling", "cancelled"}
+    db.expire_all()
+    return db.scalar(select(Run.status).where(Run.id == run_id)) in {"cancelling", "cancelled"}
 
 
 def _await_resume(db: Session, run_id: str) -> bool:
     """Block while a run is paused. Returns False if it was cancelled instead."""
-    import time
-
     while True:
         db.expire_all()
         status = db.scalar(select(Run.status).where(Run.id == run_id))
@@ -591,6 +782,11 @@ def _await_resume(db: Session, run_id: str) -> bool:
         if status != "paused":
             return True
         time.sleep(1.5)
+
+
+# --------------------------------------------------------------------------
+# automated debugging
+# --------------------------------------------------------------------------
 
 
 def debug_until_green(
@@ -644,7 +840,7 @@ def debug_until_green(
             if not fixer:
                 return {"status": "failed", "error": "Nobody available to fix it."}
 
-            ticket = autofix.ensure_bug_ticket(db, project, fixer, check)
+            work_item = autofix.ensure_bug_ticket(db, project, fixer, check)
             _set_status(db, fixer, "working", f"auto-debug {attempt}: {command}")
             events.record(
                 db,
@@ -654,7 +850,7 @@ def debug_until_green(
                 actor="Auto-debug",
                 kind="autofix.attempt",
                 summary=f"attempt {attempt}/{attempts}: {fixer.name} on `{command}`",
-                payload={"attempt": attempt, "ticket": ticket.key},
+                payload={"attempt": attempt, "item": work_item.key},
             )
             db.commit()
 
@@ -663,9 +859,9 @@ def debug_until_green(
             space = workspace.for_project(company.slug, project.key)
             snippets = check.snippets(space, cwd)
             ctx = ToolContext(
-                db=db, company=company, employee=fixer, project=project, ticket=ticket
+                db=db, company=company, employee=fixer, project=project, work_item=work_item
             )
-            run_agent_turn(
+            runtime.run_turn(
                 db,
                 ctx,
                 f"""`{command}` is failing and you are fixing it.{where}
@@ -681,17 +877,18 @@ you already have what you need, so do not spend calls grepping for it. After eac
 change run `{command}` yourself and keep going until it exits 0. Do not weaken the
 check, delete tests, or stop while it still fails.""",
                 kind="autofix",
+                purpose="work",
             )
-            _autocommit(db, None, project, ticket, fixer, company)
+            _autocommit(db, None, project, work_item, fixer, company)
             _set_status(db, fixer, "idle")
 
             check = autofix.run_check(project, company, command, cwd)
             history.append({"attempt": attempt, "passed": check.passed, "by": fixer.name})
 
             if check.passed:
-                ticket.status = "done"
-                ticket.result = f"`{command}` passes."
-                db.add(ticket)
+                work_item.status = "done"
+                work_item.result = f"`{command}` passes."
+                db.add(work_item)
                 events.record(
                     db,
                     company_id=company.id,
@@ -703,6 +900,7 @@ check, delete tests, or stop while it still fails.""",
                     payload={"attempts": attempt},
                 )
                 db.commit()
+                close_out(db, company, project, work_item, None)
                 return {"status": "passed", "attempts": attempt, "history": history}
 
             signature = check.signature()
@@ -738,6 +936,11 @@ check, delete tests, or stop while it still fails.""",
         db.close()
 
 
+# --------------------------------------------------------------------------
+# run orchestration
+# --------------------------------------------------------------------------
+
+
 def execute_run(run_id: str) -> None:
     """Entry point for the background worker."""
     db = session()
@@ -753,7 +956,13 @@ def execute_run(run_id: str) -> None:
             db.add(run)
             db.commit()
             return
+        if company.halted:
+            run.status, run.error = "failed", f"{company.name} is halted."
+            db.add(run)
+            db.commit()
+            return
 
+        roles.ensure_roles(db, company)
         run.status, run.phase = "running", "planning"
         db.add(run)
         events.record(
@@ -766,44 +975,43 @@ def execute_run(run_id: str) -> None:
         )
         db.commit()
 
-        if not _pending_tickets(db, project.id):
+        if not ready_items(db, project.id) and not blocked_by_dependencies(db, project.id):
             plan_run(db, run, project, team)
 
         run.phase = "execution"
         db.add(run)
         db.commit()
 
-        reviewer = next((e for e in team if e.role_key == "qa_engineer"), None)
+        reviewer = _pick_reviewer(db, company, team)
         stopped = False
+        done_before = 0
 
-        # Several passes: work rejected by QA comes back as `todo`, and the
-        # person who owns it deserves the review comments before the run ends.
-        # A pass that finishes nothing ends the run - another identical pass
-        # would only burn tokens.
+        # Several passes: work the checks rejected comes back as `todo`, and the
+        # person who owns it deserves the comments before the run ends. A pass
+        # that finishes nothing ends the run — another identical pass would only
+        # burn tokens.
         for cycle in range(get_settings().max_run_passes):
-            pending = _pending_tickets(db, project.id)
+            pending = ready_items(db, project.id)
             if not pending or stopped:
                 break
-            if cycle:
-                done_before = _count_done(db, project.id)
-                log.info("rework pass %s: %s tickets", cycle, len(pending))
+            done_before = _count_done(db, project.id)
 
-            for ticket in pending:
+            for work_item in pending:
                 if not _await_resume(db, run_id) or _cancelled(db, run_id):
                     stopped = True
                     break
-                db.refresh(ticket)
-                if ticket.status in {"done", "in_review"}:
+                db.refresh(work_item)
+                if work_item.status in {"done", "in_review", "blocked"}:
                     continue
-                work_ticket(db, run, project, ticket, company)
+                work_item_turn(db, run, project, work_item, company)
 
-                if reviewer and reviewer.id != ticket.assignee_id:
-                    db.refresh(ticket)
-                    if ticket.status == "in_review":
+                if reviewer and reviewer.id != work_item.assignee_id:
+                    db.refresh(work_item)
+                    if work_item.status == "in_review":
                         if not _await_resume(db, run_id) or _cancelled(db, run_id):
                             stopped = True
                             break
-                        review_ticket(db, run, project, ticket, company, reviewer)
+                        review_work_item(db, run, project, work_item, company, reviewer)
 
             if cycle and _count_done(db, project.id) == done_before:
                 log.info("pass %s finished nothing new - ending the run", cycle)
@@ -818,34 +1026,7 @@ def execute_run(run_id: str) -> None:
             wrap_up(db, run, project, team, company)
             run.status, run.phase = "completed", "done"
 
-        finished = list(db.scalars(select(Ticket).where(Ticket.project_id == project.id)))
-        done = [t for t in finished if t.status == "done"]
-        unfinished = [t for t in finished if t.status in PENDING_STATUSES]
-        blocked = [t for t in finished if t.status == "blocked"]
-        truncated = db.scalar(
-            select(func.count())
-            .select_from(RunStep)
-            .where(RunStep.run_id == run.id, RunStep.status == "step_limit")
-        )
-        run.stats = {
-            "tickets": len(finished),
-            "done": len(done),
-            "blocked": len(blocked),
-            "unfinished": len(unfinished),
-            "step_limited": truncated or 0,
-            "note": _outcome_note(len(done), unfinished, blocked, truncated or 0),
-        }
-        db.add(run)
-        events.record(
-            db,
-            company_id=run.company_id,
-            project_id=project.id,
-            run_id=run.id,
-            kind=f"run.{run.status}",
-            summary=f"Run {run.status}: {run.stats['done']}/{run.stats['tickets']} tickets done",
-            payload=run.stats,
-        )
-        db.commit()
+        _record_stats(db, run, project)
     except Exception as exc:  # keep the failure visible in the UI
         log.exception("run %s failed", run_id)
         db.rollback()
@@ -864,6 +1045,44 @@ def execute_run(run_id: str) -> None:
             db.commit()
     finally:
         db.close()
+
+
+def _pick_reviewer(db: Session, company: Company, team: list[Employee]) -> Employee | None:
+    """Whoever reviews here. Not always a QA engineer — a law firm has a partner."""
+    return roles.pick_for(db, company, team, capability="review")
+
+
+def _record_stats(db: Session, run: Run, project: Project) -> None:
+    finished = list(db.scalars(select(WorkItem).where(WorkItem.project_id == project.id)))
+    done = [item for item in finished if item.status == "done"]
+    unfinished = [item for item in finished if item.status in OPEN_STATUSES]
+    blocked = [item for item in finished if item.status == "blocked"]
+    truncated = db.scalar(
+        select(func.count())
+        .select_from(RunStep)
+        .where(RunStep.run_id == run.id, RunStep.status == "step_limit")
+    )
+    run.stats = {
+        "items": len(finished),
+        "tickets": len(finished),
+        "done": len(done),
+        "blocked": len(blocked),
+        "unfinished": len(unfinished),
+        "step_limited": truncated or 0,
+        "waiting_on_dependencies": blocked_by_dependencies(db, project.id),
+        "note": _outcome_note(len(done), unfinished, blocked, truncated or 0),
+    }
+    db.add(run)
+    events.record(
+        db,
+        company_id=run.company_id,
+        project_id=project.id,
+        run_id=run.id,
+        kind=f"run.{run.status}",
+        summary=f"Run {run.status}: {run.stats['done']}/{run.stats['items']} items done",
+        payload=run.stats,
+    )
+    db.commit()
 
 
 def start(run_id: str) -> None:

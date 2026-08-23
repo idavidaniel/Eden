@@ -1,0 +1,83 @@
+# Toolchains an employee can run, and where each one runs.
+#
+# `in_image: true` means the program is installed in the backend image and runs
+# as a subprocess, exactly as it always has. Everything else runs in a container
+# started per command with no network, the workspace bind-mounted, and the same
+# allow-list, path guard and timeout as the host path. Images pull on first use
+# rather than being baked in, which is the difference between a 3.5GB image and
+# a 40GB one.
+#
+# Container profiles need ENABLE_RUNNER_PROFILES=true and a Docker socket
+# mounted into the backend. Without that they are refused with a clear message
+# rather than silently falling back to the host.
+
+profiles:
+  - key: host
+    name: In-image toolchain
+    in_image: true
+    commands: [python, python3, pytest, ruff, mypy, ls, cat, head, tail, wc, grep, find, git, tree, diff, sed, awk]
+    timeout: 60
+
+  - key: flutter
+    name: Flutter and Dart
+    in_image: true
+    commands: [flutter, dart]
+    timeout: 420
+
+  - key: node
+    name: Node and TypeScript
+    image: node:22-slim
+    commands: [node, npm, npx, tsc, vitest]
+    timeout: 600
+    cache: npm-cache:/root/.npm
+    # Installing packages needs the network; that is why this one is not "none".
+    # Set it back to none if you would rather vendor dependencies.
+    network: bridge
+
+  - key: go
+    name: Go
+    image: golang:1.23-alpine
+    commands: [go, gofmt]
+    timeout: 300
+    cache: go-mod:/go/pkg/mod
+    env:
+      GOFLAGS: -mod=mod
+      GOCACHE: /w/.gocache
+
+  - key: rust
+    name: Rust
+    image: rust:1.83-slim
+    commands: [cargo, rustc, rustfmt]
+    timeout: 600
+    cache: cargo-registry:/usr/local/cargo/registry
+    env:
+      CARGO_TARGET_DIR: /w/target
+
+  - key: jvm
+    name: JVM
+    image: eclipse-temurin:21-jdk
+    commands: [java, javac, mvn, gradle]
+    timeout: 600
+    cache: maven-repo:/root/.m2
+
+  - key: dotnet
+    name: .NET
+    image: mcr.microsoft.com/dotnet/sdk:9.0
+    commands: [dotnet]
+    timeout: 600
+    cache: nuget:/root/.nuget/packages
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+  - key: data
+    name: Data analysis
+    image: python:3.12-slim
+    commands: [duckdb, pandas-run]
+    timeout: 300
+    packages: [duckdb, pandas, pyarrow]
+
+  - key: latex
+    name: LaTeX
+    image: texlive/texlive:latest-small
+    commands: [pdflatex, latexmk, bibtex]
+    timeout: 300

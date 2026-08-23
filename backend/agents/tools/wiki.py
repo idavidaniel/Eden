@@ -82,6 +82,7 @@ TOOLS = [
         group="wiki",
         description="List the company's wiki pages.",
         parameters=obj({"space": string("Optional space filter")}, required=[]),
+        read_only=True,
         handler=list_pages,
     ),
     Tool(
@@ -89,6 +90,7 @@ TOOLS = [
         group="wiki",
         description="Read a wiki page by slug.",
         parameters=obj({"slug": string("Page slug")}),
+        read_only=True,
         handler=read_page,
     ),
     Tool(

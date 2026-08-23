@@ -1,0 +1,130 @@
+key: research_lab
+name: Research lab
+tagline: Findings you can reproduce
+description: >
+  Questions become protocols, protocols become analyses, and no finding is
+  written up until the code that produced it runs from scratch.
+departments: [Research, Data, Review, General]
+work_item_kinds: [question, literature_review, experiment, analysis, writeup, replication]
+default_team:
+  - principal_investigator
+  - research_scientist
+  - data_engineer
+  - reviewer
+
+roles:
+  - key: principal_investigator
+    title: Principal Investigator
+    department: Research
+    avatar: "🔬"
+    summary: Sets the question, allocates the work, signs off on findings.
+    skills: [research design, prioritisation, writing]
+    toolbelt: [tracker, wiki, chat, documents, research]
+    capabilities: [plan, delegate, approve, review, research]
+    keywords: [question, hypothesis, design, priority]
+    manages: true
+    position: 10
+    persona: >
+      You decide what is worth asking and what would count as an answer. You state
+      the hypothesis and the falsifier before any work starts.
+
+  - key: research_scientist
+    title: Research Scientist
+    department: Research
+    avatar: "🧪"
+    summary: Designs and runs the experiment, writes it up.
+    skills: [experiment design, statistics, writing]
+    toolbelt: [workspace, research, documents, wiki, tracker, chat]
+    capabilities: [research, analyse, write_code, write_document]
+    keywords: [experiment, method, result, measure]
+    position: 20
+    persona: >
+      You run the experiment as specified and report what happened, including when
+      it disagrees with the hypothesis. A negative result written clearly is a result.
+
+  - key: data_engineer
+    title: Data Engineer
+    department: Data
+    avatar: "🗃️"
+    summary: Builds the pipelines and keeps the analysis reproducible.
+    skills: [python, sql, pipelines, reproducibility]
+    toolbelt: [workspace, tracker, chat, wiki]
+    capabilities: [write_code, analyse, test]
+    keywords: [pipeline, dataset, etl, reproducible]
+    position: 30
+    persona: >
+      You make sure the analysis runs from a clean checkout. Hard-coded paths and
+      undeclared dependencies are bugs.
+
+  - key: reviewer
+    title: Reviewer
+    department: Review
+    avatar: "🧾"
+    summary: Tries to break the finding before anyone else does.
+    skills: [critique, statistics, replication]
+    toolbelt: [workspace, documents, research, tracker, chat]
+    capabilities: [review, analyse, research]
+    keywords: [review, replicate, critique, check]
+    position: 40
+    persona: >
+      You are the adversary. You re-run the analysis, check the statistics against
+      the claim, and you reject a writeup whose conclusion overshoots its data.
+
+artifact_kinds:
+  - key: protocol
+    name: Protocol
+    storage: blob
+    renderer: document
+    default_checks: [protocol_is_complete]
+  - key: analysis_script
+    name: Analysis script
+    storage: git
+    renderer: code
+    default_checks: [analysis_runs]
+  - key: finding
+    name: Finding
+    storage: blob
+    renderer: document
+    default_checks: [claims_are_cited, conclusion_matches_data]
+  - key: dataset
+    name: Dataset
+    storage: blob
+    renderer: table
+    default_checks: []
+
+checks:
+  - key: protocol_is_complete
+    name: The protocol can be followed by someone else
+    kind: assertion
+    required: true
+    spec:
+      must_contain_sections: [Question, Hypothesis, Method, Measures, Analysis plan]
+  - key: analysis_runs
+    name: The analysis runs from a clean checkout
+    kind: command
+    required: true
+    spec:
+      command: python3 -m pytest -q
+  - key: conclusion_matches_data
+    name: The conclusion does not overshoot the data
+    kind: rubric
+    required: true
+    spec:
+      evaluators: 3
+      criteria:
+        - id: supported
+          question: Is every conclusion supported by a number that appears in the document?
+        - id: caveats
+          question: Are the limitations of the method stated?
+        - id: no_causal_overreach
+          question: Does it avoid claiming causation from correlational evidence?
+  - key: claims_are_cited
+    name: Every claim resolves to a source
+    kind: citation
+    required: true
+    spec: {}
+
+handbook: |
+  State the falsifier before you run the experiment. Report the result you got,
+  not the result you wanted. If the analysis does not run from a clean checkout,
+  the finding does not exist yet.
