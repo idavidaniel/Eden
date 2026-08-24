@@ -72,9 +72,33 @@ def granted_targets(employee: Employee) -> set[str]:
     return targets
 
 
+def _session_of(employee: Employee):
+    state = getattr(employee, "_sa_instance_state", None)
+    return state.session if state is not None else None
+
+
+def remote_tools(employee: Employee) -> list[Tool]:
+    """Tools from MCP servers this company has registered.
+
+    Cached definitions, so building the list is a database read rather than a
+    round trip to somebody else's server on every turn.
+    """
+    db = _session_of(employee)
+    if db is None:
+        return []
+    try:
+        from services import mcp_client
+
+        return mcp_client.tools_for(db, employee.company)
+    except Exception:
+        log.debug("could not load remote tools", exc_info=True)
+        return []
+
+
 def for_employee(employee: Employee) -> list[Tool]:
     allowed = granted_targets(employee)
-    return [tool for tool in ALL_TOOLS if tool.group in allowed or tool.name in allowed]
+    catalogue = [*ALL_TOOLS, *remote_tools(employee)]
+    return [tool for tool in catalogue if tool.group in allowed or tool.name in allowed]
 
 
 def schemas(tools: list[Tool]) -> list[dict]:
@@ -83,7 +107,8 @@ def schemas(tools: list[Tool]) -> list[dict]:
 
 def execute(name: str, ctx: ToolContext, arguments: dict) -> ToolResult:
     """Run one tool call as this employee, and write down that it happened."""
-    tool = BY_NAME.get(name)
+    available = for_employee(ctx.employee)
+    tool = BY_NAME.get(name) or next((item for item in available if item.name == name), None)
     if not tool:
         close = [known for known in BY_NAME if name in known or known in name][:3]
         return failed(
@@ -97,7 +122,7 @@ def execute(name: str, ctx: ToolContext, arguments: dict) -> ToolResult:
             f"Reason: {ctx.company.halt_reason or 'stopped by the operator'}. Stop and wait.",
         )
 
-    if name not in {allowed.name for allowed in for_employee(ctx.employee)}:
+    if name not in {allowed.name for allowed in available}:
         return failed(
             f"You do not have access to {name}.",
             "Ask the colleague whose job this is, or say on the work item that you are blocked.",

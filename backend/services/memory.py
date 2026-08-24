@@ -101,7 +101,10 @@ def blocks_for(db: Session, employee: Employee) -> list[MemoryBlock]:
         existing[label] = block
         created = True
     if created:
-        db.flush()
+        # Committed, not flushed. Creating an employee's core blocks is one-time
+        # setup that happens to be triggered by whatever turn got here first; it
+        # must not leave a write transaction open across that turn's model call.
+        db.commit()
     return [existing[label] for label in BLOCK_LABELS]
 
 
@@ -265,9 +268,23 @@ def forget(db: Session, memory: Memory, by: str = "You") -> Memory:
 # --------------------------------------------------------------------------
 
 
+# Enough of a stemmer that "billing" finds "bills". Not linguistics — just the
+# difference between the fallback being useful and being decorative.
+_SUFFIXES = ("ing", "edly", "ies", "ied", "ers", "er", "ed", "es", "s", "ly")
+
+
+def stem(word: str) -> str:
+    for suffix in _SUFFIXES:
+        if len(word) > len(suffix) + 3 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
 def tokenise(text: str) -> set[str]:
     return {
-        word for word in _WORD.findall(text.lower()) if len(word) > 2 and word not in _STOPWORDS
+        stem(word)
+        for word in _WORD.findall(text.lower())
+        if len(word) > 2 and word not in _STOPWORDS
     }
 
 
@@ -358,7 +375,9 @@ def note_use(db: Session, memories: list[Memory], employee_id: str | None) -> No
             memory.used_by = sorted(set(memory.used_by or []) | {employee_id})
         db.add(memory)
     if memories:
-        db.flush()
+        # Same reasoning as `blocks_for`: usage bookkeeping is not part of the
+        # turn's work, and must not pin a write transaction across the model call.
+        db.commit()
 
 
 # --------------------------------------------------------------------------

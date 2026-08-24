@@ -4,10 +4,19 @@ from sqlalchemy import select
 
 from models import Employee, WorkItem, WorkItemComment
 from models.work import WORK_ITEM_STATUSES
-from services import events
+from services import connectors, events
 from services.packs import kinds_for
 
-from .base import Tool, ToolContext, obj, string
+from .base import Tool, ToolContext, ToolResult, failed, obj, string
+
+
+def _external(ctx: ToolContext):
+    """The company's real tracker, when one is connected.
+
+    Same tool surface either way: an employee never learns "the Jira version" of
+    create_ticket, because there is not one.
+    """
+    return connectors.tracker_for(ctx.db, ctx.company)
 
 
 def _require_project(ctx: ToolContext):
@@ -23,7 +32,17 @@ def _next_key(ctx: ToolContext) -> str:
     return f"{project.key}-{project.ticket_counter}"
 
 
-def list_tickets(ctx: ToolContext, status: str = "", assignee: str = "") -> str:
+def list_tickets(ctx: ToolContext, status: str = "", assignee: str = "") -> ToolResult:
+    tracker = _external(ctx)
+    if tracker:
+        try:
+            items = tracker.list_items(status=status, assignee=assignee)
+        except connectors.ConnectorError as exc:
+            return failed(f"{tracker.provider} would not answer: {exc}", "")
+        if not items:
+            return ToolResult(text="No items match.")
+        return ToolResult(text="\n".join(item.line() for item in items))
+
     project = _require_project(ctx)
     query = (
         select(WorkItem)
@@ -36,14 +55,16 @@ def list_tickets(ctx: ToolContext, status: str = "", assignee: str = "") -> str:
     if assignee:
         work_items = [t for t in work_items if t.assignee_id == assignee]
     if not work_items:
-        return "No work_items match."
+        return ToolResult(text="No work items match.")
     names = {
         e.id: e.name
         for e in ctx.db.scalars(select(Employee).where(Employee.company_id == ctx.company.id))
     }
-    return "\n".join(
-        f"{t.key} [{t.status}] {t.title} — {names.get(t.assignee_id, 'unassigned')}"
-        for t in work_items
+    return ToolResult(
+        text="\n".join(
+            f"{t.key} [{t.status}] {t.title} — {names.get(t.assignee_id, 'unassigned')}"
+            for t in work_items
+        )
     )
 
 
@@ -54,7 +75,15 @@ def create_ticket(
     kind: str = "task",
     role_hint: str = "",
     priority: str = "medium",
-) -> str:
+) -> ToolResult:
+    tracker = _external(ctx)
+    if tracker:
+        try:
+            item = tracker.create_item(title=title, description=description, kind=kind)
+        except connectors.ConnectorError as exc:
+            return failed(f"{tracker.provider} would not take it: {exc}", "")
+        return ToolResult(text=f"Created {item.key} in {tracker.provider}: {item.title}")
+
     project = _require_project(ctx)
     work_item = WorkItem(
         project_id=project.id,
@@ -81,23 +110,38 @@ def create_ticket(
         summary=f"created {work_item.key}: {work_item.title}",
         payload={"work_item_id": work_item.id, "key": work_item.key},
     )
-    return f"Created {work_item.key}: {work_item.title}"
+    return ToolResult(text=f"Created {work_item.key}: {work_item.title}")
 
 
 def update_ticket(
     ctx: ToolContext, key: str, status: str = "", assignee_name: str = "", result: str = ""
-) -> str:
+) -> ToolResult:
+    tracker = _external(ctx)
+    if tracker:
+        try:
+            item = tracker.update_item(
+                key=key, status=status, assignee=assignee_name, result=result
+            )
+        except connectors.ConnectorError as exc:
+            return failed(f"{tracker.provider} would not update {key}: {exc}", "")
+        return ToolResult(
+            text=f"{item.key} is now {item.status or 'updated'} in {tracker.provider}."
+        )
+
     project = _require_project(ctx)
     work_item = ctx.db.scalar(
         select(WorkItem).where(WorkItem.project_id == project.id, WorkItem.key == key)
     )
     if not work_item:
-        return f"No work_item named {key}."
+        return failed(f"No work item named {key}.", "Call list_tickets to see the keys.")
 
     changes = []
     if status:
         if status not in WORK_ITEM_STATUSES:
-            return f"Invalid status. Use one of: {', '.join(WORK_ITEM_STATUSES)}"
+            return failed(
+                f"'{status}' is not a status here.",
+                f"Use one of: {', '.join(WORK_ITEM_STATUSES)}",
+            )
         work_item.status = status
         changes.append(f"status→{status}")
     if assignee_name:
@@ -107,7 +151,9 @@ def update_ticket(
             )
         )
         if not employee:
-            return f"No colleague matches '{assignee_name}'."
+            return failed(
+                f"No colleague matches '{assignee_name}'.", "Call list_colleagues."
+            )
         work_item.assignee_id = employee.id
         changes.append(f"assignee→{employee.name}")
     if result:
@@ -126,16 +172,23 @@ def update_ticket(
         summary=f"updated {work_item.key}: {', '.join(changes) or 'no change'}",
         payload={"work_item_id": work_item.id, "key": work_item.key, "status": work_item.status},
     )
-    return f"{work_item.key}: {', '.join(changes) or 'nothing changed'}"
+    return ToolResult(text=f"{work_item.key}: {', '.join(changes) or 'nothing changed'}")
 
 
-def comment_ticket(ctx: ToolContext, key: str, body: str) -> str:
+def comment_ticket(ctx: ToolContext, key: str, body: str) -> ToolResult:
+    tracker = _external(ctx)
+    if tracker:
+        try:
+            return ToolResult(text=tracker.comment(key=key, body=body))
+        except connectors.ConnectorError as exc:
+            return failed(f"{tracker.provider} would not take the comment: {exc}", "")
+
     project = _require_project(ctx)
     work_item = ctx.db.scalar(
         select(WorkItem).where(WorkItem.project_id == project.id, WorkItem.key == key)
     )
     if not work_item:
-        return f"No work_item named {key}."
+        return failed(f"No work item named {key}.", "Call list_tickets to see the keys.")
     ctx.db.add(
         WorkItemComment(
             work_item_id=work_item.id, author_id=ctx.employee.id, author_label=ctx.actor, body=body
@@ -152,7 +205,7 @@ def comment_ticket(ctx: ToolContext, key: str, body: str) -> str:
         summary=f"commented on {work_item.key}",
         payload={"work_item_id": work_item.id, "key": work_item.key, "body": body[:400]},
     )
-    return f"Commented on {work_item.key}."
+    return ToolResult(text=f"Commented on {work_item.key}.")
 
 
 TOOLS = [

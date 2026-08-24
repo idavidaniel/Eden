@@ -5,7 +5,7 @@ import os
 from collections.abc import Iterator
 from functools import lru_cache
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from config import get_settings
@@ -31,7 +31,27 @@ def get_engine():
     settings = get_settings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is not set.")
-    return create_engine(sqlalchemy_url(settings.database_url), pool_pre_ping=True, future=True)
+    url = sqlalchemy_url(settings.database_url)
+    if url.startswith("sqlite"):
+        # The test path. SQLite serialises writers, and this application opens a
+        # second session for bookkeeping while a turn is in flight, so it needs
+        # write-ahead logging and the patience to wait its turn.
+        engine = create_engine(
+            url,
+            pool_pre_ping=True,
+            future=True,
+            connect_args={"timeout": 30},
+        )
+
+        @event.listens_for(engine, "connect")
+        def _sqlite_pragmas(connection, _record):  # pragma: no cover - setup
+            cursor = connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
+
+        return engine
+    return create_engine(url, pool_pre_ping=True, future=True)
 
 
 @lru_cache

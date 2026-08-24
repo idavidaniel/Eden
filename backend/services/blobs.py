@@ -24,6 +24,11 @@ def hash_text(text: str) -> str:
     return hash_bytes(text.encode())
 
 
+def path(key: str) -> Path:
+    """Where a blob lives on disk. Exposed so integrity checks can look."""
+    return _path(key)
+
+
 def _path(key: str) -> Path:
     # Two-character fan-out keeps any one directory from holding every blob.
     return root() / key[:2] / key

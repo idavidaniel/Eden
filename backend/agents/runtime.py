@@ -103,6 +103,8 @@ def run_turn(
 
     step = RunStep(
         run_id=ctx.run.id if ctx.run else None,
+        company_id=ctx.company.id,
+        task_id=ctx.task_id,
         employee_id=employee.id,
         work_item_id=ctx.work_item.id if ctx.work_item else None,
         kind=kind,
@@ -110,7 +112,10 @@ def run_turn(
     )
     if persist:
         db.add(step)
-        db.flush()
+        # Committed rather than flushed: the step is a record that an attempt
+        # started, the SSE stream reads it from another connection, and holding
+        # a write transaction open across a whole model turn is its own problem.
+        db.commit()
         ctx.step_id = step.id
 
     halted = _refuse_reason(db, ctx)

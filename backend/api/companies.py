@@ -37,12 +37,16 @@ class CompanyIn(BaseModel):
     industry: str | None = None
     mission: str | None = None
     handbook: str | None = None
+    # Which industry this company is in. Decides its roles, the vocabulary for
+    # work, the kinds of deliverable, and the checks that apply to each.
+    pack: str = "software_studio"
     # Hire a starting team straight away; empty list means an empty company.
     starting_team: list[str] | None = None
 
 
 class CompanyPatch(BaseModel):
     name: str | None = None
+    settings: dict | None = None
     tagline: str | None = None
     description: str | None = None
     industry: str | None = None
@@ -258,6 +262,11 @@ def list_companies(db: Session = Depends(get_db)):
 
 @router.post("/companies", status_code=201)
 def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
+    try:
+        pack = packs.get_pack(payload.pack)
+    except packs.PackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     company = Company(
         name=payload.name,
         slug=unique_slug(db, payload.name),
@@ -266,9 +275,11 @@ def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
         industry=payload.industry,
         mission=payload.mission,
         handbook=payload.handbook,
+        pack_key=pack.key,
     )
     db.add(company)
     db.flush()
+    packs.apply_pack(db, company, pack.key)
 
     for name, purpose in DEFAULT_CHANNELS:
         db.add(Channel(company_id=company.id, name=name, purpose=purpose))

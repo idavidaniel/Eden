@@ -51,8 +51,16 @@ class RunStep(Base, IdMixin, TimestampMixin):
 
     __tablename__ = "run_steps"
 
-    run_id: Mapped[str] = mapped_column(
-        ForeignKey("runs.id", ondelete="CASCADE"), index=True, nullable=False
+    # Nullable because an employee is addressable on its own: a turn started
+    # through `/agents/{id}/messages` belongs to nobody's run.
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), index=True
+    )
+    company_id: Mapped[str | None] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_tasks.id", ondelete="SET NULL"), index=True
     )
     employee_id: Mapped[str | None] = mapped_column(ForeignKey("employees.id", ondelete="SET NULL"))
     work_item_id: Mapped[str | None] = mapped_column(
@@ -64,4 +72,4 @@ class RunStep(Base, IdMixin, TimestampMixin):
     tool_calls: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(30), default="done")
 
-    run: Mapped[Run] = relationship(back_populates="steps")
+    run: Mapped[Run | None] = relationship(back_populates="steps")

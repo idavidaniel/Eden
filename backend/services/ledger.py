@@ -30,6 +30,20 @@ def entry_hash(prev_hash: str, body: dict) -> str:
     return hashlib.sha256((prev_hash + dumps(body)).encode()).hexdigest()
 
 
+def _stamp(at: datetime | None) -> str | None:
+    """A timestamp that hashes the same however the driver handed it back.
+
+    `isoformat()` is not safe here: SQLite returns a naive datetime and Postgres
+    an aware one, so the same entry would hash two different ways depending on
+    the backend. Everything is normalised to UTC and formatted explicitly.
+    """
+    if at is None:
+        return None
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def body_of(entry: LedgerEntry) -> dict:
     """The exact bytes the hash commits to. Order matters; keep it stable."""
     return {
@@ -42,7 +56,7 @@ def body_of(entry: LedgerEntry) -> dict:
         "subject_kind": entry.subject_kind,
         "subject_id": entry.subject_id,
         "payload": entry.payload or {},
-        "at": entry.at.isoformat() if entry.at else None,
+        "at": _stamp(entry.at),
     }
 
 

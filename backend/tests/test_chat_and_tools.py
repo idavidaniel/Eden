@@ -5,7 +5,19 @@ from agents.tools.base import ToolContext
 from db import session
 from models import Company, Employee, Project
 
-HEADERS = {"Mcp-Protocol-Version": "2026-07-28", "Authorization": "Bearer test-token"}
+PROTOCOL = {"Mcp-Protocol-Version": "2026-07-28"}
+
+
+def mint_token(client, company, role_key="backend_engineer", scopes=None):
+    """A real agent token. The MCP surface no longer accepts anything else."""
+    employees = client.get(f"/companies/{company['id']}/employees").json()
+    employee = next(e for e in employees if e["role_key"] == role_key)
+    body = {"name": "test"}
+    if scopes is not None:
+        body["scopes"] = scopes
+    minted = client.post(f"/agents/{employee['id']}/tokens", json=body)
+    assert minted.status_code == 201, minted.text
+    return employee, minted.json()["token"]
 
 
 def test_default_channels_exist(client, company):
@@ -87,33 +99,88 @@ def test_tool_access_is_denied_across_toolbelts(client, company, project):
 
 
 @pytest.mark.parametrize("method", ["tools/list", "initialize"])
-def test_mcp_surface_is_protected_and_lists_platform_tools(client, method):
-    unauthorised = client.post(
-        "/mcp",
-        json={"jsonrpc": "2.0", "id": 1, "method": method},
-        headers={"Mcp-Protocol-Version": "2026-07-28"},
+def test_mcp_needs_a_real_token_not_just_a_bearer_header(client, company, method):
+    """The bridge used to accept any string. It resolves a real credential now."""
+    call = {"jsonrpc": "2.0", "id": 1, "method": method}
+
+    assert client.post("/mcp", json=call, headers=PROTOCOL).status_code == 401
+
+    made_up = client.post(
+        "/mcp", json=call, headers={**PROTOCOL, "Authorization": "Bearer test-token"}
     )
-    assert unauthorised.status_code == 401
+    assert made_up.status_code == 401
 
+    _, token = mint_token(client, company)
     response = client.post(
-        "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": method}, headers=HEADERS
+        "/mcp", json=call, headers={**PROTOCOL, "Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    assert "result" in response.json()
+
+
+def test_mcp_acts_as_the_token_holder_and_only_their_tools(client, company, project):
+    """Identity comes from the credential, so there is no employee_id to spoof."""
+    engineer, engineer_token = mint_token(client, company, "backend_engineer")
+    manager, manager_token = mint_token(client, company, "engineering_manager")
+
+    listed = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers={**PROTOCOL, "Authorization": f"Bearer {manager_token}"},
     ).json()
-    assert "result" in response
+    manager_tools = {tool["name"] for tool in listed["result"]["tools"]}
+    assert "write_file" not in manager_tools
+    assert "create_ticket" in manager_tools
 
-
-def test_mcp_tools_require_an_employee_identity(client):
-    response = client.post(
+    written = client.post(
         "/mcp",
         json={
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
-            "params": {"name": "post_message", "arguments": {"body": "hi"}},
+            "params": {
+                "name": "write_file",
+                "arguments": {
+                    "path": "via_mcp.txt",
+                    "content": "hello",
+                    "project_id": project["id"],
+                },
+            },
         },
-        headers=HEADERS,
+        headers={**PROTOCOL, "Authorization": f"Bearer {engineer_token}"},
     ).json()
-    assert response["result"]["isError"] is True
-    assert "employee_id" in response["result"]["content"][0]["text"]
+    assert written["result"]["isError"] is False
+
+    refused = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "write_file", "arguments": {"path": "x", "content": "y"}},
+        },
+        headers={**PROTOCOL, "Authorization": f"Bearer {manager_token}"},
+    ).json()
+    assert "error" in refused or refused["result"]["isError"] is True
+
+    feed = client.get(f"/companies/{company['id']}/activity").json()["events"]
+    assert any(
+        event["kind"] == "code.write" and event["employee_id"] == engineer["id"]
+        for event in feed
+    )
+    assert manager["id"] != engineer["id"]
+
+
+def test_a_revoked_token_stops_working(client, company):
+    employee, token = mint_token(client, company)
+    header = {**PROTOCOL, "Authorization": f"Bearer {token}"}
+    call = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    assert client.post("/mcp", json=call, headers=header).status_code == 200
+
+    listed = client.get(f"/agents/{employee['id']}/tokens").json()
+    client.delete(f"/agents/{employee['id']}/tokens/{listed[0]['id']}")
+
+    assert client.post("/mcp", json=call, headers=header).status_code == 401
 
 
 def test_prompt_tells_an_employee_what_they_cannot_reach(client, company):

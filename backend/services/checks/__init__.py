@@ -31,6 +31,11 @@ RUNNERS = {
     "human": human.run,
 }
 
+# Kinds that reach a verdict by reading a deliverable. A check of one of these
+# kinds bound to a work item is about the thing the item produced, so it has to
+# be handed that artifact rather than run against nothing.
+READS_AN_ARTIFACT = {"schema", "assertion", "citation", "rubric"}
+
 # A verdict of `pending` blocks closure just as firmly as a failure; it is
 # separated so the interface can say "waiting on you" rather than "broken".
 BLOCKING = {"fail", "error", "pending"}
@@ -142,18 +147,24 @@ def run_for_work_item(
     results: list[CheckResult] = []
 
     for check in applicable(db, company, project=project, work_item=work_item):
-        results.append(
-            run_one(
-                db,
-                check,
-                company=company,
-                project=project,
-                work_item=work_item,
-                author=author,
-                run_id=run_id,
-                task_id=task_id,
+        # A document check with nothing to read would record "skipped" and then
+        # be passed over by the artifact loop below, so the deliverable it was
+        # written for would never actually be judged.
+        targets = produced if (check.kind in READS_AN_ARTIFACT and produced) else [None]
+        for artifact in targets:
+            results.append(
+                run_one(
+                    db,
+                    check,
+                    company=company,
+                    project=project,
+                    work_item=work_item,
+                    artifact=artifact,
+                    author=author,
+                    run_id=run_id,
+                    task_id=task_id,
+                )
             )
-        )
 
     for artifact in produced:
         for check in applicable(

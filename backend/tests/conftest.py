@@ -83,3 +83,153 @@ def project(client, company):
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+@pytest.fixture
+def law_firm(client):
+    response = client.post(
+        "/companies",
+        json={
+            "name": "Marsh & Idris",
+            "pack": "law_firm",
+            "description": "Commercial contracts for small manufacturers.",
+            "starting_team": ["managing_partner", "associate"],
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+class FakeCompletion:
+    """Shaped like the provider's reply, so nothing under test knows the difference."""
+
+    def __init__(self, content="", tool_calls=None, reasoning=""):
+        self.choices = [
+            type(
+                "Choice",
+                (),
+                {
+                    "message": type(
+                        "Message",
+                        (),
+                        {
+                            "content": content,
+                            "reasoning_content": reasoning,
+                            "tool_calls": tool_calls or [],
+                        },
+                    )()
+                },
+            )()
+        ]
+        self.usage = type("Usage", (), {"prompt_tokens": 120, "completion_tokens": 40})()
+
+
+def fake_tool_call(name, arguments):
+    import json as _json
+
+    return type(
+        "Call",
+        (),
+        {
+            "id": f"call_{name}",
+            "function": type(
+                "Fn", (), {"name": name, "arguments": _json.dumps(arguments)}
+            )(),
+        },
+    )()
+
+
+@pytest.fixture
+def scripted_model(monkeypatch):
+    """Drive the agent loop without a provider.
+
+    Push replies onto the queue; each `chat` call pops one. A reply is either a
+    string (the turn ends) or a list of (tool_name, arguments) pairs.
+    """
+    from agents import llm
+    from services import usage
+
+    queue: list = []
+    seen: list = []
+
+    def scripted_chat(messages, tools=None, model=None, **kwargs):
+        seen.append({"messages": messages, "tools": tools, "model": model})
+        # The real provider wrapper is what writes usage, so the stand-in does
+        # too — otherwise every accounting path would be untested.
+        usage.record(
+            model or "stub-model", prompt_tokens=120, completion_tokens=40, latency_ms=5
+        )
+        if not queue:
+            return llm.ModelCall(reasoning="", content="Nothing left to do.", tool_calls=[])
+        nxt = queue.pop(0)
+        if isinstance(nxt, str):
+            return llm.ModelCall(reasoning="thinking", content=nxt, tool_calls=[])
+        return llm.ModelCall(
+            reasoning="",
+            content="",
+            tool_calls=[
+                {"id": f"c{index}", "name": name, "arguments": arguments}
+                for index, (name, arguments) in enumerate(nxt)
+            ],
+        )
+
+    monkeypatch.setattr(llm, "chat", scripted_chat)
+    monkeypatch.setattr("agents.runtime.chat", scripted_chat)
+    return type("Script", (), {"queue": queue, "seen": seen})()
+
+
+@pytest.fixture
+def structured_answers(monkeypatch):
+    """Replace forced-tool-call output with canned answers, keyed by tool name."""
+    from agents import llm
+
+    answers: dict = {}
+    calls: list = []
+
+    def scripted(messages, name, description, parameters, model=None, max_tokens=3000):
+        calls.append({"name": name, "messages": messages})
+        if name not in answers:
+            raise AssertionError(f"No scripted answer for structured_call({name})")
+        value = answers[name]
+        return value(messages) if callable(value) else value
+
+    monkeypatch.setattr(llm, "structured_call", scripted)
+    monkeypatch.setattr("agents.engine.structured_call", scripted)
+    monkeypatch.setattr("agents.reflect.structured_call", scripted)
+    return type("Structured", (), {"answers": answers, "calls": calls})()
+
+
+@pytest.fixture
+def no_embeddings(monkeypatch):
+    """Force the lexical retrieval path, which is what runs without a provider."""
+    from services import embeddings
+
+    monkeypatch.setattr(embeddings, "available", lambda: False)
+    monkeypatch.setattr(embeddings, "embed_passages", lambda texts: None)
+    monkeypatch.setattr(embeddings, "embed_query", lambda text: None)
+
+
+@pytest.fixture
+def fake_embeddings(monkeypatch):
+    """Deterministic vectors with real structure: shared words move them together.
+
+    Not a stand-in for the real model — it exists so the *vector code path* is
+    exercised, including cosine ranking and the merge threshold.
+    """
+    import hashlib
+
+    from services import embeddings, memory
+
+    def vector(text: str) -> list[float]:
+        words = sorted(memory.tokenise(text))
+        out = [0.0] * 32
+        for word in words:
+            digest = hashlib.sha256(word.encode()).digest()
+            for index in range(32):
+                out[index] += digest[index] / 255.0
+        total = sum(value * value for value in out) ** 0.5 or 1.0
+        return [value / total for value in out]
+
+    monkeypatch.setattr(embeddings, "available", lambda: True)
+    monkeypatch.setattr(embeddings, "embed_passages", lambda texts: [vector(t) for t in texts])
+    monkeypatch.setattr(embeddings, "embed_query", lambda text: vector(text))

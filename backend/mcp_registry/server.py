@@ -6,7 +6,7 @@ context, so any replica can serve any call.
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from config import get_settings
@@ -38,7 +38,10 @@ def _error(req_id, code: int, message: str) -> dict:
 
 
 @router.post("")
-async def mcp_endpoint(req: JSONRPCRequest):
+async def mcp_endpoint(req: JSONRPCRequest, request: Request):
+    agent = getattr(request.state, "agent", None)
+    employee = _employee_for(agent)
+
     if req.method == "initialize":
         return _result(
             req.id,
@@ -46,6 +49,9 @@ async def mcp_endpoint(req: JSONRPCRequest):
                 "protocolVersion": get_settings().mcp_protocol_version,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": SERVER_INFO,
+                # Say plainly who the caller is acting as; guessing is how the
+                # wrong employee ends up credited with somebody else's work.
+                "actingAs": agent,
             },
         )
 
@@ -53,16 +59,16 @@ async def mcp_endpoint(req: JSONRPCRequest):
         return _result(req.id, {})
 
     if req.method == "tools/list":
-        return _result(req.id, {"tools": tools.list_definitions()})
+        return _result(req.id, {"tools": tools.list_definitions(employee)})
 
     if req.method == "tools/call":
         name = req.params.get("name")
         if not name:
             return _error(req.id, INVALID_PARAMS, "Missing 'name'.")
-        if name not in {tool["name"] for tool in tools.list_definitions()}:
-            return _error(req.id, METHOD_NOT_FOUND, f"Unknown tool: {name}")
+        if name not in {tool["name"] for tool in tools.list_definitions(employee)}:
+            return _error(req.id, METHOD_NOT_FOUND, f"Unknown or unavailable tool: {name}")
         try:
-            text = tools.call(name, req.params.get("arguments", {}))
+            text = tools.call(name, req.params.get("arguments", {}), agent)
         except Exception as exc:
             # Tool failures are reported in-band so the model can react to them.
             return _result(
@@ -72,3 +78,16 @@ async def mcp_endpoint(req: JSONRPCRequest):
         return _result(req.id, {"content": [{"type": "text", "text": text}], "isError": False})
 
     return _error(req.id, METHOD_NOT_FOUND, f"Unknown method: {req.method}")
+
+
+def _employee_for(agent: dict | None):
+    if not agent:
+        return None
+    from db import session
+    from models import Employee
+
+    db = session()
+    try:
+        return db.get(Employee, agent["employee_id"])
+    finally:
+        db.close()
