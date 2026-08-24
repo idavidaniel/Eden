@@ -2,45 +2,84 @@
 
 ## Done
 
-- [x] Companies with a profile (description, mission, handbook) that every
-      employee reads before working
-- [x] Role catalogue and hiring, org chart from reporting lines
-- [x] Per-employee service accounts (username, password, API token per tool),
-      sealed at rest, revealable and rotatable
-- [x] Enforced toolbelts — the registry refuses tools an employee was not issued,
-      and their prompt says who to ask instead
-- [x] Ticket tracker: types, six statuses, acceptance criteria, comments,
-      per-ticket agent work log
-- [x] Git workspace per project: read, write, sandboxed run, commit as the employee
-- [x] Wiki with spaces and version history
-- [x] Chat channels where @mentioning an employee gets a real reply
-- [x] Autonomous runs: plan → work → QA review → rework → wrap up, with
-      pause/resume/stop and recovery from restarts
-- [x] Live activity stream (SSE) behind every surface
-- [x] MCP bridge exposing the same tools over JSON-RPC 2.0
-- [x] 36 backend tests (SQLite + stubbed model), lint and CI
+### The spine
 
-- [x] Flutter and Dart in the workspace image, so employees can scaffold,
-      analyse and test real Flutter apps
-- [x] Verification gate: a project command the platform runs itself; a failing
-      build reopens the ticket regardless of what the employee reported
-- [x] Web preview: build a Flutter package for the web and serve it from the board
+- [x] Alembic migrations, with a baseline that adopts a pre-migration database
+      and a test that runs the whole chain — and its downgrades — on Postgres
+- [x] Work items → artifacts → checks, replacing tickets-and-vibes
+- [x] Six check kinds: command, schema, assertion, citation, rubric, human
+- [x] Content-addressed deliverables; a file edited after it passed no longer
+      hashes to what the ledger recorded
+- [x] Hash-chained ledger, one per company, with `POST /ledger/verify`
+- [x] Re-verification that replays deterministic checks and reports which ones
+      no longer agree — and refuses to call an empty record proved
 
-- [x] `edit_file` for surgical changes, so a one-line fix does not require
-      rewriting the whole file
-- [x] Automated debugging: build → errors + source context → fix → rebuild,
-      with stall detection; runs itself when a preview build fails
+### Agents
+
+- [x] Every employee addressable at `/agents/{id}/*` with its own token; a token
+      is the key to one agent and cannot drive a colleague
+- [x] Scoped tokens, revocable, hashed at rest, shown once
+- [x] Memory: four always-loaded blocks plus a searchable store, vector when an
+      embedding model is configured and lexical when not, saying which
+- [x] The learning gate — a procedure may only be distilled from work whose
+      checks passed, over HTTP as well as in the reflection pass
+- [x] Failure-weighted ranking; contradictions supersede rather than overwrite
+- [x] Six-tier context assembler that reports what each tier contributed
+- [x] Per-employee model policy, daily spend cap, and measured token accounting
+
+### Any industry
+
+- [x] Industry packs as YAML → database rows; roles, work vocabulary,
+      deliverable kinds and their checks
+- [x] Five packs: software studio, law firm, marketing agency, research lab, blank
+- [x] Roles read from the database, so a pack can be edited and re-applied
+
+### Capabilities
+
+- [x] Tool contract v2 with grants, audit and refusal reasons
+- [x] Internet access with a default-deny allow-list, a source ledger, and an
+      untrusted-source envelope
+- [x] Read-only-after-fetch: a turn that read the web may not act until the next one
+- [x] Container runner profiles (Go, Rust, JVM, .NET, LaTeX, Node, data, Flutter)
+- [x] GitHub and Jira connectors behind the existing tool interface
+- [x] MCP client — another server's tools appear alongside the built-in ones
+- [x] Agent-authored tools behind a review gate, with their own examples re-run
+      before approval
+
+### The org
+
+- [x] Org clock with `FOR UPDATE SKIP LOCKED` leasing and lease reclamation
+- [x] Autonomy opt-in per company, and a halt switch that refuses every turn
+- [x] Agent-to-agent protocol with hop limits and escalation
+- [x] Meetings that must end in a structured outcome, which becomes work
+- [x] Approvals that block work until a person answers
+- [x] Performance read from finished work; coaching that proposes, never applies
+
+### The interface
+
+- [x] Design tokens with all three theme states; a serif for deliverables so a
+      document reads as a document
+- [x] One SSE connection per company, shared, driving query invalidation
+- [x] Twelve routes under `/c/[companyId]`, with 308s from the old ones
+- [x] The provenance chip: verdict, then method, then evidence
+
+### Proof
+
+- [x] Exportable work record with a record hash
+- [x] A/B eval harness (memory on vs off) that can report that the idea failed
+- [x] 200 backend tests, lint and CI
 
 ## Next
 
+- [ ] Platform authentication and per-user ownership of companies. Right now
+      anyone who can reach the API is an admin of every company — this is the
+      largest single gap.
+- [ ] Verify MCP bearer tokens against an IdP's JWKS rather than our own store,
+      for clients that are not Eden agents
+- [ ] Parallel work per employee — currently one turn each at a time
 - [ ] Android SDK in the image so `flutter build apk` produces an installable app
-
-- [ ] Connectors: Jira Cloud, Confluence and GitHub adapters behind the existing
-      tool interface, configured per company in Settings
-- [ ] Platform authentication and per-user ownership of companies
-- [ ] Verify MCP bearer tokens against an IdP's JWKS instead of checking presence
-- [ ] Parallel employees inside one run (dependency-aware scheduling)
-- [ ] Long-term memory per employee: what they learned on past projects
-- [ ] Company knowledge base (upload documents, retrieval as a tool)
-- [ ] Cost and token accounting per run, per employee
-- [ ] Human approval gate for chosen actions (opt-in per company)
+- [ ] Run the eval suites repeatedly and publish the distribution; one run is
+      not evidence and the harness says so
+- [ ] Confluence connector, and an artifact kind that writes to it
+- [ ] A UI for authored tools (proposing is agent-side; reviewing is API-only)
+- [ ] Cost forecasting before a run, not just accounting after it

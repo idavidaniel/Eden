@@ -1,43 +1,136 @@
-# Eden — AI employees that work as a company
+# Eden — companies of AI employees whose work is checked before it counts as done
 
-Create a company, describe what it does, hire AI employees into real roles, and
-give them a project. A manager breaks the brief into tickets, assigns them by
-role, and the team works the board: writing code in a git workspace, running
-tests, reviewing each other's work, documenting it in the wiki and coordinating
-in chat — while you watch it happen live and interrupt when you want to.
+Found a company in any industry. It is staffed with the roles that industry
+actually has. Give it a brief; it plans the work, does it, and produces
+deliverables — and nothing is marked done because an agent said so. Something
+checkable has to agree.
+
+Every employee is an addressable agent with its own memory, its own toolbelt,
+its own budget and its own API token. The dashboard is one client of that API,
+not a privileged path through the middle of it.
 
 ```
-                     ┌──────────────────────────────────────────┐
-   You ─── brief ───▶│  Manager agent: plan → tickets → assign   │
-                     └───────────────┬──────────────────────────┘
-                                     │
-        ┌───────────────┬────────────┼─────────────┬────────────────┐
-        ▼               ▼            ▼             ▼                ▼
-    Backend eng    Frontend eng    QA eng     Tech writer      Product mgr
-        │               │            │             │                │
-        └──── each acts through their own accounts on ──────────────┘
-                 tracker · wiki · workspace(git) · chat
-                                     │
-                        every action ▼ appended to the activity feed → live UI
+  You ── brief ──▶ plan ──▶ work ──▶ ARTIFACT ──▶ CHECK ──▶ done
+                                         │           │
+                                         │           ├── command   run it, read the exit status
+                                         │           ├── schema    parse it against a schema
+                                         │           ├── assertion match it against rules
+                                         │           ├── citation  look every quote up in its source
+                                         │           ├── rubric    a panel votes; a vote whose
+                                         │           │             quote is not in the document
+                                         │           │             is discarded
+                                         │           └── human     you decide
+                                         │
+                                         └── hash ──▶ ledger ──▶ re-provable later
 ```
 
-## What it does
+The last arrow is the point. `POST /projects/{id}/ledger/verify` re-reads the
+hash chain, re-hashes every deliverable, and runs every deterministic check
+again. If the file changed after it passed, or somebody quietly tightened the
+standard, the report says so. If nothing was ever checked, it says that too —
+an intact chain over an empty record is not evidence that any work was done.
+
+## Any industry
+
+An industry pack is a YAML file that decides the roles, the vocabulary for
+work, the kinds of deliverable, and how each kind gets checked. Five ship:
+
+| Pack | Roles | Work is called | Deliverables checked by |
+| --- | --- | --- | --- |
+| `software_studio` | manager, PM, architect, backend, frontend, QA, devops, writer, analyst, designer | task, bug, chore | a command that runs, plus rubrics |
+| `law_firm` | managing partner, associate, paralegal, compliance, clerk | matter, drafting task | clause rules, defined-term checks, citations |
+| `marketing_agency` | strategist, copywriter, designer, analyst, manager | campaign, brief, asset | tone rubrics, claim citations |
+| `research_lab` | principal investigator, researcher, analyst, writer | study, experiment, paper | citation resolution, schema validation |
+| `blank` | two generalists | task | nothing until you add some |
+
+A law firm gets partners and contract drafts, not backend engineers and pull
+requests. Roles live in the database, so a pack can be edited and re-applied.
+
+## Every employee is an agent
+
+```bash
+# Mint a token for one employee, then talk to them.
+curl -X POST localhost:8000/agents/$ID/messages \
+  -H "Authorization: Bearer edn_..." \
+  -d '{"message": "What is blocking SENSOR-3?"}'
+```
+
+A token is the key to **one** agent. It cannot drive a colleague — that is what
+stops one compromised agent from becoming all of them. Scopes narrow it further.
 
 | Surface | What is there |
 | --- | --- |
-| **Companies** | Found a company with a description, mission and handbook — every employee reads it before working. |
-| **People** | Hire from a role catalogue (manager, PM, architect, backend, frontend, QA, writer, analyst, devops). Roster, org chart by reporting line, per-employee profile. |
-| **Credentials** | Each employee gets a username, password and API token *per tool*, sealed at rest and revealable or rotatable from their profile. |
-| **Projects & board** | Jira-shaped: epics/stories/tasks/bugs, six statuses, drag between columns, acceptance criteria, comments, and the agent's own work log per ticket. |
-| **Code workspace** | A real git repo per project. Agents read, write, **run** (sandboxed) and commit under their own name. Browse the tree, edit in the editor, read diffs. |
-| **Wiki** | Confluence-shaped spaces and pages with version history, written by the team as they work. |
-| **Chat** | Channels shared with the agents. Mention someone (`@Ada`) and they pick it up, use their tools, and reply. |
-| **Live feed** | Every tool call, commit, status change and message, streamed to the dashboard over SSE. |
-| **Runs** | Start, pause, resume or stop an autonomous run. QA-rejected work comes back for a rework pass. |
-| **Verification gate** | A per-project command (`dart analyze .`, `flutter test`, `pytest -q`) that the *platform* runs after every ticket. Fails → the ticket reopens, whatever the employee or QA claimed. |
-| **Live preview** | Builds a Flutter package for the web and serves it, so a finished app can be opened from the board. The container has no screen, so web is the honest route. |
-| **Auto-debug** | Build fails → the platform hands an engineer the errors *and the source around them*, they fix and re-run until the check passes. Stops itself when an attempt changes nothing. Triggered automatically when a preview build fails. |
-| **MCP** | The same tool registry exposed over JSON-RPC 2.0, so external clients can act as an employee. |
+| `GET /agents/{id}/card` | Who they are, every tool they can reach, which model answers which purpose |
+| `GET /agents/{id}/prompt` | The exact system prompt they run with. Nothing hidden from you that is not hidden from them |
+| `POST /agents/{id}/messages` | One turn, synchronously, with every tool call and a per-tier context report |
+| `POST /agents/{id}/tasks` | Queue work; the org clock picks it up. SSE stream per task |
+| `GET /agents/{id}/memory` | Their four always-loaded blocks and their searchable store, with a retrieval preview |
+| `GET /agents/{id}/usage` | Tokens and cost, today/month/all-time, against their daily cap |
+
+### Memory, and whether it earns its place
+
+Four short blocks always in context, plus a searchable store of facts, episodes
+and procedures retrieved per turn. Retrieval is by meaning when an embedding
+model is configured and by words when it is not, and the interface says which.
+
+Two rules do the work:
+
+- **The learning gate.** An agent may only distil a *procedure* from a work item
+  whose checks passed. You can teach it facts; know-how has to be earned. The
+  HTTP endpoint refuses `kind: "procedure"` for the same reason.
+- **Failure outranks success.** A rejection teaches more than a success, so the
+  ranking weights it higher. A contradiction supersedes rather than overwrites —
+  what an agent used to believe is evidence, so it is kept and marked.
+
+Whether any of that helps is a claim, so it is measurable:
+
+```bash
+docker compose exec backend python /app/../scripts/run_evals.py software_studio
+```
+
+The suite runs a fixed set of briefs twice — memory on, memory off — in two
+throwaway companies, and reports first-try check pass rate, tool calls per work
+item, and tokens per accepted deliverable. It can conclude that the idea failed.
+
+## The org runs without you
+
+A clock leases queued work with `SELECT … FOR UPDATE SKIP LOCKED`, so two
+processes never take the same task and a worker that dies mid-turn has its lease
+reclaimed. It is **off per company by default**, because it spends money.
+
+- One turn per employee at a time — they have one workspace and one identity.
+- Agents message each other; a thread that goes round in circles is escalated to
+  a manager, and if there is no manager, to you.
+- A meeting that produces nothing did not happen: each one ends in a structured
+  outcome that becomes work items.
+- **Halt** refuses every turn immediately, including queued ones.
+
+## What agents can reach
+
+38 built-in tools across ten groups, plus any MCP server you register and any
+tool an agent wrote that you approved.
+
+- **Egress is default-deny.** Localhost, private ranges and link-local are never
+  fetchable, even with the allow-list wide open.
+- **A turn that read the web may no longer act.** Prompt injection works by
+  getting the context that read the attacker's text to immediately do something;
+  a turn boundary in the middle is the cheapest defence that holds. It costs one
+  extra turn, only on turns that touched the internet.
+- **Fetched text is enveloped** as `<untrusted-source>`, and kept, so a citation
+  check can look a quote up in the page it claims to come from.
+- **Commands have no shell** — no pipes, redirection or chaining — and container
+  profiles (`go`, `rust`, `jvm`, `dotnet`, `latex`, `node`, `data`, `flutter`)
+  run `--network=none` when enabled.
+- **Every tool call is audited**, including the refused ones and why.
+
+### Tools an agent wrote
+
+An agent that keeps redoing the same calculation can propose a tool. The body is
+a single expression run by the same AST-restricted evaluator assertion checks
+use — no imports, no attribute access, no I/O. It must supply worked examples,
+which run before you ever see the proposal, and again before approval. Nothing
+is callable until a person approves it, and the approval goes in the chain with
+the expression it approved.
 
 ## Quick start
 
@@ -49,92 +142,49 @@ docker compose up --build
 - Dashboard: http://localhost:3000
 - API docs: http://localhost:8000/docs
 
-Then either click "New company" in the dashboard, or run the scripted demo:
-
-```bash
-python3 scripts/demo.py
-```
-
-It founds a company, hires six employees, files a project brief and prints the
-team's activity as they work through it.
-
-## The debugging loop
-
-A failing check does not wait for you:
-
-1. The platform runs the check (`dart analyze .`, `flutter test`, `pytest -q` …).
-2. On failure it picks the engineer whose work broke — by file type — and opens
-   or reuses one `Auto-debug:` bug ticket.
-3. That engineer gets the error lines **and the numbered source around each one**,
-   so they can edit rather than hunt. `edit_file` replaces one exact snippet, so a
-   one-line fix does not mean re-emitting a 400-line file.
-4. The check runs again. Green → the ticket closes. Same errors as last time →
-   the loop stops rather than burning tokens. Otherwise, next attempt.
-
-Start it by hand with `POST /projects/{id}/autofix`, from the preview panel, or
-let a failed preview build start it for you.
-
-## How a run works
-
-1. **Plan** — the manager reads the brief and the roster, then writes 4–8 tickets
-   with acceptance criteria and assigns each to the role that fits.
-2. **Work** — for each ticket, that employee gets their persona, the company
-   profile, the ticket, the workspace file list, the wiki index and recent chat.
-   They then act through their tools until they stop.
-3. **Review** — QA reads the acceptance criteria, inspects the files, runs the
-   tests, and either closes the ticket or sends it back with a comment.
-4. **Rework** — a second pass picks up anything QA rejected.
-5. **Wrap up** — the manager posts the outcome to `#general`.
-
-You can pause or stop between any two steps; the run checks before each one.
-
-## Guardrails that matter
-
-- **Toolbelts are enforced.** A manager calling `write_file` is refused by the
-  registry, and their prompt tells them what they cannot reach and who to ask.
-- **Commands are sandboxed.** `run_command` has no shell — no pipes, redirection
-  or chaining — and only allows interpreters and inspection tools
-  (`python3`, `pytest`, `node`, `flutter`, `dart`, `ruff`, `ls`, `cat`, `grep`,
-  `find`, `git`, …). A `cwd` argument scopes it to one package in a monorepo.
-- **Claims are checked by the platform, not the agent.** Set a project's
-  verification command and no ticket closes while it fails.
-- **Workspaces are contained.** Every path is resolved and rejected if it escapes
-  the project root.
-- **Restarts are survivable.** Runs interrupted by a restart are marked as such
-  instead of hanging in `running` forever.
-
 ## Repository layout
 
 ```
 backend/
-  config.py         environment-driven settings
-  db.py             engine, session, schema creation
-  models/           companies, employees, identities, projects, tickets, wiki, chat, runs
-  api/              HTTP surface, one module per area
+  models/           companies, employees, work items, artifacts, checks, memory,
+                    ledger, tokens, tasks, grants, authored tools
+  migrations/       Alembic, 0001 baseline adopts a pre-migration database
+  api/              HTTP surface: companies, agents, ops, connections
   agents/
-    engine.py       plan → work → review → rework → wrap up
-    llm.py          model client (tool calling, streaming, lenient JSON)
-    prompts.py      system prompts, including the toolbelt briefing
-    tools/          tracker, wiki, chat, workspace + registry with access checks
-  services/         crypto (sealing), identity issuing, git workspaces, activity feed
-  tests/            36 tests, no external services required
+    engine.py       plan → work → verify → review → close out
+    runtime.py      one turn: context, tools, budget, cancellation
+    context.py      six-tier assembler; every tier reports what it contributed
+    reflect.py      the learning gate
+    tools/          ten groups + registry with grant and audit checks
+  services/
+    checks/         six check kinds; the AST-restricted expression evaluator
+    ledger.py       hash chain, one per company
+    proof.py        re-verification and the exportable work record
+    memory.py       blocks, retrieval, merge, supersede, promote, decay
+    clock.py        leasing, reclaiming, scheduling
+    evals.py        the A/B harness
+  packs/            five industry packs
+  evals/suites/     the fixed briefs the harness runs
+  tests/            200 tests, no external services required
 frontend/src/
-  app/              App Router pages (company shell + 8 surfaces) and the API proxy
-  components/       dashboard, board, workspace editor, wiki, chat, org chart, live feed
-  lib/              typed API client, hooks, formatting
-scripts/            demo.py (scripted company) and smoke_test.py (stack check)
+  app/c/[companyId]/  overview, agents, work, artifacts, studio, knowledge,
+                      rooms, inbox, ops, connections, settings
+  components/ui/      primitives, and the provenance chip
+  lib/                API client, one shared SSE connection per company
 ```
 
 ## Tests
 
 ```bash
-docker compose run --rm backend pytest      # or: cd backend && pytest
-cd frontend && npm run lint && npm run build
-python3 scripts/smoke_test.py               # against a running stack
+make test-backend        # 200 tests, SQLite, stubbed model provider
+make test-migrations     # the real migrations, on a scratch Postgres database
+make lint
 ```
 
-The backend suite runs on SQLite with a stubbed model provider — no API key,
-database or Redis needed.
+The migration tests create a throwaway database, migrate it from empty to head,
+and ask Alembic whether the result matches the models. One of them downgrades
+every migration back to the baseline and up again, because a downgrade nobody
+has run is a downgrade that does not work.
 
 ## Configuration
 
@@ -142,22 +192,25 @@ database or Redis needed.
 | --- | --- | --- |
 | `NVIDIA_API_KEY` | — | Required for the employees to think |
 | `MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | Any OpenAI-compatible NVIDIA model with tool calling |
-| `SECRET_KEY` | `dev-insecure-key` | Seals employee credentials — change it for anything real |
-| `DATABASE_URL` | set by compose | Postgres |
-| `DATA_DIR` | `/data` | Where project git workspaces live |
-| `MAX_AGENT_STEPS` | `32` | Tool calls one employee gets per ticket; they are warned 3 short of it |
-| `MAX_RUN_PASSES` | `4` | Ceiling on passes; a run also stops once a pass finishes nothing |
+| `EMBEDDING_MODEL` | `nvidia/nv-embedqa-e5-v5` | 1024 dims. Without it, retrieval is lexical and says so |
+| `SECRET_KEY` | `dev-insecure-key` | Seals credentials — change it for anything real |
+| `DATABASE_URL` | set by compose | Postgres with pgvector |
+| `DATA_DIR` | `/data` | Workspaces and the content-addressed blob store |
+| `ORG_CLOCK` | `1` | The clock itself. Companies still opt in individually |
+| `ENABLE_RUNNER_PROFILES` | `0` | Container-isolated toolchains. Needs a Docker socket |
+| `MAX_AGENT_STEPS` | `32` | Tool calls per turn; they are warned 3 short |
 | `RUN_CONCURRENCY` | `2` | Projects that can run at once |
-| `API_URL` (frontend) | `http://localhost:8000` | Server-side only; the browser uses `/api/backend/*` |
 
-## Not built yet
+## Known limits
 
-- External connectors. Tools sit behind an adapter and the built-in modules
-  implement it; Jira Cloud, Confluence and GitHub adapters are not written.
-- Native app builds. The image ships Flutter and Dart, so employees can analyse,
-  test and build for the web — but there is no Android SDK, no Xcode and no
-  display, so APKs, desktop binaries and emulators are out of reach.
-- Authentication. There are no platform users — anyone who can reach the API is
-  an admin of every company.
-- MCP authorization verifies that a bearer token is present, not that it is valid.
-- Runs execute tickets one at a time; employees do not work in parallel.
+- **No authentication.** There are no platform users: anyone who can reach the
+  API is an admin of every company. Agent tokens authenticate *agents*, not you.
+- **Cost is an estimate** from a configurable rate table. Tokens are measured.
+- **Rubric checks need a model**, so re-verification reports them as recorded
+  rather than replaying them. The report distinguishes the two.
+- **No native app builds.** Flutter and Dart are in the image, so web builds
+  work; there is no Android SDK, no Xcode and no display.
+- **One turn per employee at a time.** Different employees run in parallel; one
+  employee does not.
+- **The eval harness is not a benchmark** against anyone else. It is a
+  regression test on our own claims, and one run is not evidence.
