@@ -444,3 +444,40 @@ def run_checks(work_item_id: str, db: Session = Depends(get_db)):
         "results": [serializers.check_result(row) for row in results],
         "verdict": check_service.verdict_for(results) if results else None,
     }
+
+
+@router.get("/work-items/{work_item_id}/checks")
+def work_item_checks(work_item_id: str, db: Session = Depends(get_db)):
+    """What will be checked, and what the last run said — without running it.
+
+    Separate from the POST because looking at the standard a piece of work is
+    held to should not cost anything or change anything.
+    """
+    item = db.get(WorkItem, work_item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Work item not found.")
+    project = db.get(Project, item.project_id)
+    company = project.company
+
+    produced = list(
+        db.scalars(
+            select(Artifact).where(
+                Artifact.work_item_id == item.id, Artifact.superseded_by.is_(None)
+            )
+        )
+    )
+    applicable = check_service.applicable(db, company, project=project, work_item=item)
+    for artifact in produced:
+        for check in check_service.applicable(
+            db, company, project=project, work_item=item, artifact=artifact
+        ):
+            if all(existing.id != check.id for existing in applicable):
+                applicable.append(check)
+
+    results = check_service.latest_for_work_item(db, item.id)
+    return {
+        "checks": [serializers.check(row) for row in applicable],
+        "results": [serializers.check_result(row) for row in results],
+        "verdict": check_service.verdict_for(results) if results else None,
+        "artifacts": [serializers.artifact(row) for row in produced],
+    }
