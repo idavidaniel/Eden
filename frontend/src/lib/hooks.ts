@@ -166,6 +166,14 @@ export function useTheme() {
   // the DOM is the source of truth. `useSyncExternalStore` reads it without an
   // effect and keeps the server render ("system") from mismatching.
   const theme = useSyncExternalStore(subscribeToTheme, readTheme, () => "system" as const);
+  // What is actually on screen. "system" is a real third state, and anything
+  // that has to match the page — a code editor, a canvas — needs the resolved
+  // answer rather than the stored preference.
+  const resolved = useSyncExternalStore(
+    subscribeToTheme,
+    readResolvedTheme,
+    () => "light" as const,
+  );
 
   const choose = (next: "system" | "light" | "dark") => {
     if (next === "system") {
@@ -178,17 +186,28 @@ export function useTheme() {
     for (const listener of themeListeners) listener();
   };
 
-  return { theme, choose };
+  return { theme, resolved, choose };
 }
 
 const themeListeners = new Set<() => void>();
 
 function subscribeToTheme(listener: () => void) {
   themeListeners.add(listener);
-  return () => themeListeners.delete(listener);
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  media.addEventListener("change", listener);
+  return () => {
+    themeListeners.delete(listener);
+    media.removeEventListener("change", listener);
+  };
 }
 
 function readTheme(): "system" | "light" | "dark" {
   const stamped = document.documentElement.dataset.theme;
   return stamped === "light" || stamped === "dark" ? stamped : "system";
+}
+
+function readResolvedTheme(): "light" | "dark" {
+  const stamped = readTheme();
+  if (stamped !== "system") return stamped;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }

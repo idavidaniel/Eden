@@ -480,3 +480,32 @@ def test_an_artifact_outside_the_chain_is_not_proof(client, company, project):
         assert report["proved"] is False
     finally:
         db.close()
+
+def test_an_empty_project_is_not_proved_just_because_nothing_is_wrong(
+    client, company, project
+):
+    """An intact chain over an empty record is not evidence that work was done."""
+    db, company_row, project_row = _context(company["id"], project["id"])
+    try:
+        report = proof.reverify(db, project_row)
+        assert report["chain"]["intact"] is True
+        assert report["has_evidence"] is False
+        assert report["proved"] is False
+        assert "nothing here to prove" in report["note"]
+    finally:
+        db.close()
+
+
+def test_a_deliverable_nobody_checked_is_not_proof_either(client, company, project):
+    db, company_row, project_row = _context(company["id"], project["id"])
+    try:
+        _write(db, company_row, project_row, "unchecked.md", "Trust me, it is fine.")
+        db.commit()
+
+        report = proof.reverify(db, project_row)
+        assert report["artifacts"]["intact"] == 1
+        assert report["artifacts"]["not_in_ledger"] == []
+        assert report["proved"] is False, "an unchecked deliverable is a claim"
+        assert "no check has ever run" in report["note"]
+    finally:
+        db.close()

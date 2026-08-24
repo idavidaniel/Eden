@@ -129,8 +129,10 @@ export const api = {
       get<ToolCall[]>(`/companies/${id}/tool-calls${query({ limit })}`),
     sources: (id: string, limit = 100) => get<Source[]>(`/companies/${id}/sources${query({ limit })}`),
     performance: (id: string) => get<{ employees: Performance[] }>(`/companies/${id}/performance`),
-    artifacts: (id: string, limit = 100) =>
-      get<Artifact[]>(`/companies/${id}/artifacts${query({ limit })}`),
+    artifacts: (id: string, kind?: string) =>
+      get<{ artifacts: Artifact[]; by_kind: Record<string, number> }>(
+        `/companies/${id}/artifacts${query({ kind })}`,
+      ),
     ledger: (id: string, limit = 100) =>
       get<{ entries: LedgerEntry[]; head: string | null }>(`/companies/${id}/ledger${query({ limit })}`),
     verifyLedger: (id: string) => post<ChainVerdict>(`/companies/${id}/ledger/verify`),
@@ -236,14 +238,24 @@ export const api = {
       post<{ results: CheckResult[]; verdict: Record<string, unknown> }>(
         `/work-items/${id}/checks/run`,
       ),
-    checks: (id: string) => get<{ checks: Check[]; results: CheckResult[] }>(`/work-items/${id}/checks`),
+    checks: (id: string) =>
+      get<{
+        checks: Check[];
+        results: CheckResult[];
+        verdict: Record<string, unknown> | null;
+        artifacts: Artifact[];
+      }>(`/work-items/${id}/checks`),
   },
 
   artifacts: {
     get: (id: string) =>
-      get<Artifact & { checks: CheckResult[]; integrity: { state: string; detail: string } }>(
-        `/artifacts/${id}`,
-      ),
+      get<
+        Artifact & {
+          checks: CheckResult[];
+          versions: Artifact[];
+          integrity: { state: string; detail: string; expected?: string; found?: string };
+        }
+      >(`/artifacts/${id}`),
   },
 
   approvals: {

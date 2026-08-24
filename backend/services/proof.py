@@ -72,15 +72,31 @@ def reverify(db: Session, project: Project, rerun_checks: bool = True) -> dict:
             "skipped": skipped,
             "disagreements": disagreements,
         },
+        # Nothing to prove is not the same as proved, and a deliverable nobody
+        # checked is a claim rather than a result. Both would otherwise come
+        # back green, which is exactly what this mechanism exists to refuse.
+        "has_evidence": bool(replayed or skipped),
         "proved": bool(
-            chain["intact"] and not disagreements and not unrecorded and not changed
+            (replayed or skipped)
+            and chain["intact"]
+            and not disagreements
+            and not unrecorded
+            and not changed
         ),
-        "note": _verdict_note(chain, disagreements, changed, unrecorded, skipped),
+        "note": _verdict_note(
+            chain, disagreements, changed, unrecorded, skipped, artifacts, replayed
+        ),
     }
 
 
 def _verdict_note(
-    chain: dict, disagreements: list, changed: list, unrecorded: list, skipped: list
+    chain: dict,
+    disagreements: list,
+    changed: list,
+    unrecorded: list,
+    skipped: list,
+    artifacts: list,
+    replayed: list,
 ) -> str:
     if not chain["intact"]:
         return "The record itself has been altered — see chain.problems."
@@ -93,15 +109,28 @@ def _verdict_note(
         parts.append(f"{len(unrecorded)} artifact(s) were never committed to the chain")
     if disagreements:
         parts.append(f"{len(disagreements)} check(s) no longer agree with their recorded verdict")
-    if not parts:
-        note = "Everything the record claims still holds."
-        if skipped:
-            note += (
-                f" {len(skipped)} check(s) could not be replayed automatically "
-                "(a rubric or a human decision) and are reported as recorded."
-            )
-        return note
-    return "; ".join(parts) + "."
+    if parts:
+        return "; ".join(parts) + "."
+
+    if not artifacts and not replayed and not skipped:
+        return (
+            "There is nothing here to prove: this project has produced no deliverables "
+            "and nothing has been checked. An intact chain over an empty record is not "
+            "evidence that any work was done."
+        )
+    if not replayed and not skipped:
+        return (
+            f"{len(artifacts)} deliverable(s) are intact and recorded, but no check has ever "
+            "run against them, so nothing independent vouches for their contents."
+        )
+
+    note = "Everything the record claims still holds."
+    if skipped:
+        note += (
+            f" {len(skipped)} check(s) could not be replayed automatically "
+            "(a rubric or a human decision) and are reported as recorded."
+        )
+    return note
 
 
 def _committed_hashes(db: Session, company_id: str, project_id: str) -> set[str]:

@@ -318,6 +318,8 @@ export interface ProofReport {
     disagreements: ReplayedCheck[];
   };
   proved: boolean;
+  /** False when nothing has ever been checked — distinct from a failed proof. */
+  has_evidence: boolean;
   note: string;
 }
 
