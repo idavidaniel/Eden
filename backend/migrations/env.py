@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import models  # noqa: F401,E402  (registers every mapper)
 from db import sqlalchemy_url  # noqa: E402
+from migrations.filters import include_object as _include_object  # noqa: E402
 from models.base import Base  # noqa: E402
 
 config = context.config
@@ -25,24 +26,6 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 # Set while generating the baseline so autogenerate sees only the pre-v2 tables.
-_ONLY_TABLES = {t for t in os.getenv("ALEMBIC_ONLY_TABLES", "").split(",") if t}
-_SKIP_TABLES = {t for t in os.getenv("ALEMBIC_SKIP_TABLES", "").split(",") if t}
-
-
-# Indexes created by raw DDL because SQLAlchemy cannot express them. Without
-# this, every autogenerate helpfully proposes dropping them again.
-HAND_WRITTEN_INDEXES = {"ix_memories_embedding_hnsw"}
-
-
-def _include_object(obj, name, type_, reflected, compare_to):  # noqa: ARG001
-    if type_ == "index" and name in HAND_WRITTEN_INDEXES:
-        return False
-    if type_ == "table":
-        if _ONLY_TABLES and name not in _ONLY_TABLES:
-            return False
-        if name in _SKIP_TABLES:
-            return False
-    return True
 
 
 def _url() -> str:
