@@ -507,3 +507,25 @@ def source(row: Source) -> dict:
 def cost(micros: float) -> dict:
     """Money is always shown with the fact that it is an estimate attached."""
     return {"micros": round(micros, 3), "display": pricing.format_cost(micros), "estimated": True}
+
+
+def authored_tool(row) -> dict:
+    return {
+        "id": row.id,
+        "company_id": row.company_id,
+        "author_id": row.author_id,
+        "author_label": row.author_label,
+        "name": row.name,
+        "description": row.description,
+        "rationale": row.rationale,
+        "parameters": row.parameters or {},
+        "expression": row.expression,
+        "examples": row.examples or [],
+        "status": row.status,
+        "review_note": row.review_note,
+        "reviewed_by": row.reviewed_by,
+        "reviewed_at": iso(row.reviewed_at),
+        "uses": row.uses,
+        "last_used_at": iso(row.last_used_at),
+        "created_at": iso(row.created_at),
+    }

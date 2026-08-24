@@ -1,6 +1,6 @@
 from .agents import AgentTask, AgentToken, UsageEvent
 from .base import Base, new_id
-from .capability import McpServer, ToolCall, ToolGrant
+from .capability import AuthoredTool, McpServer, ToolCall, ToolGrant
 from .collab import AgentMessage, Approval, Meeting
 from .comms import Channel, Message
 from .knowledge import Document, DocumentVersion
@@ -47,6 +47,7 @@ __all__ = [
     "Employee",
     "Identity",
     "LedgerEntry",
+    "AuthoredTool",
     "McpServer",
     "Meeting",
     "Memory",

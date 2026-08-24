@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from models import Connection, Employee, ToolCall, ToolGrant
 
+from .authoring import TOOLS as AUTHORING_TOOLS
 from .base import Tool, ToolContext, ToolResult, failed
 from .chat import TOOLS as CHAT_TOOLS
 from .code import DIRECTORY_TOOLS
@@ -37,12 +38,15 @@ ALL_TOOLS: list[Tool] = [
     *DIRECTORY_TOOLS,
     *MEMORY_TOOLS,
     *PROTOCOL_TOOLS,
+    *AUTHORING_TOOLS,
 ]
 BY_NAME: dict[str, Tool] = {tool.name: tool for tool in ALL_TOOLS}
 
 # Groups everybody gets: knowing who your colleagues are, remembering things,
 # and being able to answer a colleague are not privileges.
-ALWAYS_GRANTED = {"directory", "memory", "protocol"}
+# `authored` is always granted because every tool in it has already been
+# through a person; the gate is approval, not a second grant.
+ALWAYS_GRANTED = {"directory", "memory", "protocol", "authored", "authoring"}
 
 # Argument names whose values never reach the audit log.
 SECRET_ARGUMENTS = {"password", "token", "secret", "api_key", "authorization", "key"}
@@ -95,9 +99,27 @@ def remote_tools(employee: Employee) -> list[Tool]:
         return []
 
 
+def authored_tools(employee: Employee) -> list[Tool]:
+    """Tools written by agents here that a person has since approved.
+
+    Proposed and rejected ones are not in this list, which is the entire point:
+    an agent cannot reach a tool it wrote until somebody said it could.
+    """
+    db = _session_of(employee)
+    if db is None:
+        return []
+    try:
+        from services import authored_tools as authored
+
+        return authored.as_tools(db, employee.company)
+    except Exception:
+        log.debug("could not load authored tools", exc_info=True)
+        return []
+
+
 def for_employee(employee: Employee) -> list[Tool]:
     allowed = granted_targets(employee)
-    catalogue = [*ALL_TOOLS, *remote_tools(employee)]
+    catalogue = [*ALL_TOOLS, *remote_tools(employee), *authored_tools(employee)]
     return [tool for tool in catalogue if tool.group in allowed or tool.name in allowed]
 
 

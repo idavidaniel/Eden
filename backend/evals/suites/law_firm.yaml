@@ -1,0 +1,36 @@
+# The same shape for a non-software company, because "any industry" is a claim
+# that has to be measurable too.
+key: law_firm
+name: Law firm
+pack: law_firm
+team: [managing_partner, associate]
+briefs:
+  - key: supply_agreement
+    title: Supply agreement for a small manufacturer
+    brief: >
+      Draft a supply agreement between Northwind Instruments and a component
+      supplier. It must define its terms before using them, and must include a
+      limitation of liability clause.
+    checks:
+      - key: defines_its_terms
+        kind: assertion
+        spec:
+          rule: every_defined_term_has_a_definition
+      - key: has_the_clauses
+        kind: assertion
+        spec:
+          must_contain_sections: ["Limitation of Liability", "Term"]
+  - key: services_agreement
+    title: Services agreement for the same client
+    brief: >
+      Draft a services agreement for Northwind Instruments engaging a
+      calibration contractor. Same house conventions as their supply agreement.
+    checks:
+      - key: defines_its_terms
+        kind: assertion
+        spec:
+          rule: every_defined_term_has_a_definition
+      - key: has_the_clauses
+        kind: assertion
+        spec:
+          must_contain_sections: ["Limitation of Liability", "Term"]

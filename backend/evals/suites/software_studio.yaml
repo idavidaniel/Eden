@@ -1,0 +1,45 @@
+# A fixed set of briefs, run twice — once with memory, once without.
+#
+# These are deliberately small and deliberately repetitive: three of them touch
+# the same conventions, so an agent that remembered what it learnt on the first
+# should do measurably better on the third. If it does not, the memory system
+# is not earning its complexity and the report says so.
+key: software_studio
+name: Software studio
+pack: software_studio
+team: [engineering_manager, backend_engineer, qa_engineer]
+briefs:
+  - key: cursor_pagination
+    title: Sensor listing endpoint
+    brief: >
+      Add GET /sensors returning every sensor. It must paginate with an opaque
+      cursor rather than an offset, and the response must include a next_cursor
+      field that is null on the last page.
+    checks:
+      - key: uses_a_cursor
+        kind: assertion
+        spec:
+          must_match: "next_cursor"
+          must_not_match: "offset="
+  - key: quiet_sensors
+    title: Quiet sensor endpoint
+    brief: >
+      Add GET /sensors/quiet returning sensors with no reading in the last hour.
+      It paginates the same way the sensor listing does.
+    checks:
+      - key: uses_a_cursor
+        kind: assertion
+        spec:
+          must_match: "next_cursor"
+          must_not_match: "offset="
+  - key: readings_history
+    title: Reading history endpoint
+    brief: >
+      Add GET /sensors/{id}/readings returning that sensor's readings, newest
+      first, paginated the same way the other listing endpoints are.
+    checks:
+      - key: uses_a_cursor
+        kind: assertion
+        spec:
+          must_match: "next_cursor"
+          must_not_match: "offset="

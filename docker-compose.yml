@@ -27,6 +27,10 @@ services:
       - --host=0.0.0.0
       - --port=8000
       - --reload
+      # A new migration file must not trigger a restart: the reloading process
+      # runs init_db(), which would apply the revision before you have finished
+      # editing it — and then the file you meant to write is orphaned.
+      - --reload-exclude=migrations/*
       # Long-lived event streams must not hold a restart open.
       - --timeout-graceful-shutdown=5
     environment:
@@ -38,6 +42,12 @@ services:
       # Seals employee credentials at rest. Change it for anything real.
       SECRET_KEY: ${SECRET_KEY:-dev-insecure-key}
       RUN_CONCURRENCY: ${RUN_CONCURRENCY:-2}
+      # The org clock starts work on its own, but only for companies that opted
+      # in. Off here stops it entirely, whatever a company has set.
+      ORG_CLOCK: ${ORG_CLOCK:-1}
+      # Container-isolated build toolchains (Go, Rust, the JVM, LaTeX…).
+      # Needs a Docker socket, so it is off unless you ask for it.
+      ENABLE_RUNNER_PROFILES: ${ENABLE_RUNNER_PROFILES:-0}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:

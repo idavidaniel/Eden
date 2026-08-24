@@ -481,3 +481,135 @@ def work_item_checks(work_item_id: str, db: Session = Depends(get_db)):
         "verdict": check_service.verdict_for(results) if results else None,
         "artifacts": [serializers.artifact(row) for row in produced],
     }
+
+
+@router.get("/evals")
+def list_eval_suites():
+    """The suites that exist, and what each one is trying to measure."""
+    from services import evals
+
+    try:
+        suites = evals.all_suites()
+    except evals.EvalError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "suites": [
+            {
+                "key": suite.key,
+                "name": suite.name,
+                "pack": suite.pack,
+                "team": suite.team,
+                "briefs": [
+                    {"key": brief.key, "title": brief.title, "checks": len(brief.checks)}
+                    for brief in suite.briefs
+                ],
+            }
+            for suite in suites.values()
+        ],
+        "note": (
+            "Each suite runs twice — once with memory and once without — in throwaway "
+            "companies, and reports whether the numbers actually move."
+        ),
+    }
+
+
+class AuthoredToolIn(BaseModel):
+    name: str
+    description: str = ""
+    rationale: str = ""
+    parameters: dict = {}
+    expression: str
+    examples: list[dict] = []
+    author_id: str | None = None
+
+
+class ToolReviewIn(BaseModel):
+    approved: bool
+    note: str = ""
+
+
+@router.get("/companies/{company_id}/authored-tools")
+def list_authored_tools(company_id: str, db: Session = Depends(get_db)):
+    """Tools agents here wrote for themselves, and where each one stands."""
+    from models import AuthoredTool
+    from services import authored_tools
+
+    company = get_company(db, company_id)
+    rows = list(
+        db.scalars(
+            select(AuthoredTool)
+            .where(AuthoredTool.company_id == company.id)
+            .order_by(AuthoredTool.created_at.desc())
+        )
+    )
+    return {
+        "tools": [serializers.authored_tool(row) for row in rows],
+        "waiting": len([row for row in rows if row.status == "proposed"]),
+        "note": (
+            "A proposed tool is not callable. Its body is a single expression run by "
+            "the same restricted evaluator assertion checks use — no imports, no "
+            "attribute access, no I/O — and its own worked examples are re-run before "
+            "it can be approved."
+        ),
+        "usable_now": [row.name for row in authored_tools.approved_for(db, company)],
+    }
+
+
+@router.post("/companies/{company_id}/authored-tools", status_code=201)
+def propose_tool(company_id: str, payload: AuthoredToolIn, db: Session = Depends(get_db)):
+    from services import authored_tools
+
+    company = get_company(db, company_id)
+    author = db.get(Employee, payload.author_id) if payload.author_id else None
+    try:
+        row = authored_tools.propose(
+            db,
+            company=company,
+            author=author,
+            name=payload.name,
+            description=payload.description,
+            rationale=payload.rationale,
+            parameters=payload.parameters,
+            expression=payload.expression,
+            examples=payload.examples,
+        )
+    except authored_tools.AuthoredToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return serializers.authored_tool(row)
+
+
+@router.post("/authored-tools/{tool_id}/review")
+def review_tool(tool_id: str, payload: ToolReviewIn, db: Session = Depends(get_db)):
+    """Approve or refuse. Nothing is callable until this says approved."""
+    from models import AuthoredTool
+    from services import authored_tools
+
+    row = db.get(AuthoredTool, tool_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="No such tool.")
+    try:
+        authored_tools.review(db, row, approved=payload.approved, note=payload.note)
+    except authored_tools.AuthoredToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return serializers.authored_tool(row)
+
+
+@router.post("/authored-tools/{tool_id}/try")
+def try_tool(tool_id: str, arguments: dict, db: Session = Depends(get_db)):
+    """Run an approved tool by hand, to see what it does before trusting it."""
+    from models import AuthoredTool
+    from services import authored_tools
+
+    row = db.get(AuthoredTool, tool_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="No such tool.")
+    try:
+        result = authored_tools.call(db, row, arguments)
+    except authored_tools.AuthoredToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"It failed: {exc}") from exc
+    db.commit()
+    return {"result": result}

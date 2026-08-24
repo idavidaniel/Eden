@@ -2,7 +2,16 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, IdMixin, TimestampMixin
@@ -83,3 +92,49 @@ class McpServer(Base, IdMixin, TimestampMixin):
     # Cached tool definitions from tools/list, so a turn does not pay for discovery.
     tools: Mapped[list] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(default=True)
+
+
+AUTHORED_TOOL_STATUSES = ["proposed", "approved", "rejected", "retired"]
+
+
+class AuthoredTool(Base, IdMixin, TimestampMixin):
+    """A tool an agent wrote for itself, which nobody may use until you say so.
+
+    An agent that hits the same fiddly calculation on every third work item
+    should be able to write it down once. But a tool is code that runs, so this
+    is deliberately the narrowest possible version of that idea: the body is a
+    single expression evaluated by the same AST-restricted evaluator that
+    assertion checks use — no imports, no attribute access, no I/O — and it
+    stays unusable until a person approves it.
+
+    The gate is not ceremony. An agent that could write and immediately run its
+    own tools could do anything the process was designed to stop.
+    """
+
+    __tablename__ = "authored_tools"
+    __table_args__ = (UniqueConstraint("company_id", "name", name="uq_authored_tool_name"),)
+
+    company_id: Mapped[str] = mapped_column(
+        ForeignKey("companies.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    author_id: Mapped[str | None] = mapped_column(
+        ForeignKey("employees.id", ondelete="SET NULL"), index=True
+    )
+    author_label: Mapped[str] = mapped_column(String(160), default="")
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    description: Mapped[str] = mapped_column(String(400), default="")
+    # Why it exists — what the agent kept having to do by hand.
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    # Named inputs, each with a type the caller must satisfy.
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    # One expression, evaluated by services.checks.expressions.
+    expression: Mapped[str] = mapped_column(Text, nullable=False)
+    # Worked examples the author claims. Every one is run before approval.
+    examples: Mapped[list] = mapped_column(JSON, default=list)
+
+    status: Mapped[str] = mapped_column(String(20), default="proposed", index=True)
+    review_note: Mapped[str] = mapped_column(Text, default="")
+    reviewed_by: Mapped[str | None] = mapped_column(String(160))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

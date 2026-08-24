@@ -263,26 +263,57 @@ def list_companies(db: Session = Depends(get_db)):
 @router.post("/companies", status_code=201)
 def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
     try:
-        pack = packs.get_pack(payload.pack)
+        company = found_company(
+            db,
+            name=payload.name,
+            pack=payload.pack,
+            starting_team=payload.starting_team,
+            tagline=payload.tagline,
+            description=payload.description,
+            industry=payload.industry,
+            mission=payload.mission,
+            handbook=payload.handbook,
+        )
     except packs.PackError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return serializers.company(company, company_stats(db, company.id))
+
+
+def found_company(
+    db: Session,
+    *,
+    name: str,
+    pack: str | None = None,
+    starting_team: list[str] | None = None,
+    tagline: str = "",
+    description: str = "",
+    industry: str = "",
+    mission: str = "",
+    handbook: str = "",
+) -> Company:
+    """Found a company and staff it. Shared by the API and the eval harness.
+
+    Kept out of the route handler because an eval that founded companies a
+    slightly different way would be measuring a slightly different product.
+    """
+    chosen = packs.get_pack(pack)
 
     company = Company(
-        name=payload.name,
-        slug=unique_slug(db, payload.name),
-        tagline=payload.tagline,
-        description=payload.description,
-        industry=payload.industry,
-        mission=payload.mission,
-        handbook=payload.handbook,
-        pack_key=pack.key,
+        name=name,
+        slug=unique_slug(db, name),
+        tagline=tagline,
+        description=description,
+        industry=industry,
+        mission=mission,
+        handbook=handbook,
+        pack_key=chosen.key,
     )
     db.add(company)
     db.flush()
-    packs.apply_pack(db, company, pack.key)
+    packs.apply_pack(db, company, chosen.key)
 
-    for name, purpose in DEFAULT_CHANNELS:
-        db.add(Channel(company_id=company.id, name=name, purpose=purpose))
+    for channel_name, purpose in DEFAULT_CHANNELS:
+        db.add(Channel(company_id=company.id, name=channel_name, purpose=purpose))
 
     events.record(
         db,
@@ -293,8 +324,8 @@ def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
     )
 
     team = (
-        payload.starting_team
-        if payload.starting_team is not None
+        starting_team
+        if starting_team is not None
         else roles_service.default_team(company)
     )
     manager = None
@@ -309,7 +340,7 @@ def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
                 db.add(employee)
 
     db.commit()
-    return serializers.company(company, company_stats(db, company.id))
+    return company
 
 
 @router.get("/companies/{company_id}")

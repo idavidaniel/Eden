@@ -108,11 +108,20 @@ def assemble(
         report["work"] = {"chars": len(work), "trimmed": trimmed, "key": work_item.key}
 
     # Tiers 2–4 — retrieved memory.
+    #
+    # Switchable per company, because "memory helps" is a claim rather than an
+    # assumption. The eval harness runs the same briefs with this off and
+    # reports whether the numbers actually move; the switch has to be real for
+    # that comparison to mean anything.
+    remembers = (company.settings or {}).get("memory_enabled", True)
     for tier, kinds in (
         ("facts", ["fact"]),
         ("procedures", ["procedure"]),
         ("episodes", ["episode"]),
     ):
+        if not remembers:
+            report[tier] = {"count": 0, "mode": "off", "chars": 0, "trimmed": False, "titles": []}
+            continue
         hits, mode = memory.search(
             db,
             company.id,
