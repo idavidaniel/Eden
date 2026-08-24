@@ -250,8 +250,11 @@ def _plain(fragment: str) -> str:
 
 def envelope(source: Source, text: str) -> str:
     """Wrap fetched text so the model treats it as data, not as instructions."""
+    # The id can be absent if the row has not been flushed yet. The envelope is
+    # a safety boundary, so it degrades rather than raising.
+    marker = (source.id or "unsaved")[:8]
     return (
-        f'<untrusted-source id="{source.id[:8]}" url="{source.url}">\n'
+        f'<untrusted-source id="{marker}" url="{source.url}">\n'
         f"{text}\n"
         "</untrusted-source>"
     )

@@ -125,12 +125,18 @@ def lease_next(db: Session, limit: int) -> list[AgentTask]:
         query = query.with_for_update(skip_locked=True)
 
     claimed: list[AgentTask] = []
+    # Claims made in this batch are not in the database yet, so the one-turn-per
+    # -employee rule has to remember them here as well as query for them.
+    taken: set[str] = set()
     for task in db.scalars(query):
+        if task.employee_id in taken:
+            continue
         if _busy(db, task.employee_id) or _halted(db, task.company_id):
             continue
         task.status = "leased"
         task.lease_until = now + timedelta(seconds=LEASE_SECONDS)
         db.add(task)
+        taken.add(task.employee_id)
         claimed.append(task)
     db.commit()
     return claimed

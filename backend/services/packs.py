@@ -167,9 +167,20 @@ def all_packs() -> dict[str, Pack]:
 
 
 def get_pack(key: str | None) -> Pack:
+    """The pack by that name. No key means the default; a wrong key is an error.
+
+    Quietly substituting the default for a name nobody has would found a
+    software studio for someone who asked for a law firm, and they would not
+    find out until the wrong people showed up.
+    """
     packs = all_packs()
-    if key and key in packs:
-        return packs[key]
+    if key:
+        if key in packs:
+            return packs[key]
+        raise PackError(
+            f"There is no industry pack called '{key}'. "
+            f"Installed: {', '.join(sorted(packs)) or 'none'}."
+        )
     if DEFAULT_PACK in packs:
         return packs[DEFAULT_PACK]
     raise PackError(f"No industry packs are installed in {PACKS_DIR}")
