@@ -17,6 +17,9 @@ os.environ["DATABASE_URL"] = f"sqlite:///{TEMP_DATA}/test.db"
 os.environ["DATA_DIR"] = TEMP_DATA
 os.environ["SECRET_KEY"] = "test-secret"
 os.environ.setdefault("NVIDIA_API_KEY", "test-key")
+# The suite signs up hundreds of times from one address, which is exactly what
+# the limiter exists to stop. `test_auth.py` switches it back on to prove it does.
+os.environ.setdefault("RATE_LIMITS", "off")
 
 import db as db_module  # noqa: E402
 
@@ -54,8 +57,39 @@ def schema():
 
 
 @pytest.fixture
-def client():
+def anonymous_client():
+    """A client that has not signed in. For testing that it cannot get in."""
     with TestClient(main.app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def account(anonymous_client):
+    """A signed-up person, and the organisation they own.
+
+    Each test gets its own, so one test's data is never visible to another —
+    which also means the suite is exercising tenant isolation constantly rather
+    than only in the tests that mention it.
+    """
+    import uuid
+
+    email = f"person-{uuid.uuid4().hex[:10]}@example.com"
+    password = "correct-horse-battery"
+    response = anonymous_client.post(
+        "/auth/signup",
+        json={"email": email, "password": password, "full_name": "Test Person"},
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    return {**body["user"], "email": email, "password": password, "tokens": body}
+
+
+@pytest.fixture
+def client(account):
+    """Signed in. Almost every test wants this, so it is the default."""
+    with TestClient(main.app) as test_client:
+        test_client.cookies.set("eden_access", account["tokens"]["access_token"])
+        test_client.cookies.set("eden_refresh", account["tokens"]["refresh_token"])
         yield test_client
 
 

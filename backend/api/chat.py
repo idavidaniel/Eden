@@ -13,7 +13,7 @@ from db import get_db, session
 from models import Channel, Employee, Message, Project
 from services import events
 
-from . import serializers
+from . import lookups, serializers
 from .companies import get_company
 
 log = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ def _reply_in_background(company_id: str, channel_id: str, employee_id: str, que
     db = session()
     try:
         employee = db.get(Employee, employee_id)
-        channel = db.get(Channel, channel_id)
+        channel = lookups.channel(db, channel_id)
         if not employee or not channel:
             return
         project = db.get(Project, channel.project_id) if channel.project_id else None
@@ -116,7 +116,7 @@ def create_channel(company_id: str, payload: ChannelIn, db: Session = Depends(ge
 
 @router.get("/channels/{channel_id}/messages")
 def list_messages(channel_id: str, limit: int = Query(100, le=300), db: Session = Depends(get_db)):
-    channel = db.get(Channel, channel_id)
+    channel = lookups.channel(db, channel_id)
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found.")
     rows = list(
@@ -132,7 +132,7 @@ def list_messages(channel_id: str, limit: int = Query(100, le=300), db: Session 
 
 @router.post("/channels/{channel_id}/messages", status_code=201)
 def post_message(channel_id: str, payload: MessageIn, db: Session = Depends(get_db)):
-    channel = db.get(Channel, channel_id)
+    channel = lookups.channel(db, channel_id)
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found.")
 

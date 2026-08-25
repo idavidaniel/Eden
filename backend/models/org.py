@@ -12,6 +12,11 @@ from .base import Base, IdMixin, TimestampMixin
 class Company(Base, IdMixin, TimestampMixin):
     __tablename__ = "companies"
 
+    # Who owns this. Every read of a company checks it against the caller's
+    # tenant; without this column the sign-in screen would be decoration.
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     slug: Mapped[str] = mapped_column(String(120), unique=True, nullable=False, index=True)
     tagline: Mapped[str | None] = mapped_column(String(240))

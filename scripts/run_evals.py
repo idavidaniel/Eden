@@ -22,6 +22,15 @@ from db import session  # noqa: E402
 from services import evals  # noqa: E402
 
 
+def _first_tenant(db) -> str:
+    from sqlalchemy import select
+
+    from models import Tenant
+
+    row = db.scalar(select(Tenant).order_by(Tenant.created_at))
+    return row.id if row else ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("suite", nargs="?", help="Which suite. Omit to list them.")
@@ -32,6 +41,11 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true", help="Print the raw report.")
     parser.add_argument("--label", default="", help="Name this run in the report.")
+    parser.add_argument(
+        "--tenant",
+        default="",
+        help="Which organisation owns the throwaway companies. Defaults to the first.",
+    )
     args = parser.parse_args()
 
     if not args.suite:
@@ -44,9 +58,18 @@ def main() -> int:
     db = session()
     try:
         suite = evals.get_suite(args.suite)
+        tenant_id = args.tenant or _first_tenant(db)
+        if not tenant_id:
+            print(
+                "error: no organisation exists yet. Sign up first, so the throwaway "
+                "companies belong to somebody.",
+                file=sys.stderr,
+            )
+            return 2
         report = evals.run_suite(
             db,
             suite,
+            tenant_id=tenant_id,
             arms=(True,) if args.memory_only else (True, False),
             label=args.label,
         )

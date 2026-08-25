@@ -101,8 +101,16 @@ def test_an_empty_database_migrates_to_head(scratch_database):
         "tool_grants",
         "tool_calls",
         "mcp_servers",
+        "authored_tools",
+        "tenants",
+        "users",
+        "refresh_tokens",
     } <= tables
     assert "tickets" not in tables, "the rename should have happened"
+
+    # Tenancy is the column the whole authorisation model rests on.
+    columns = {column["name"] for column in inspector.get_columns("companies")}
+    assert "tenant_id" in columns
     engine.dispose()
 
 

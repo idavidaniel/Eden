@@ -63,6 +63,50 @@ class Settings:
         default_factory=lambda: os.getenv("REQUIRE_MCP_AUTH", "true").lower() != "false"
     )
 
+    # --- people signing in ----------------------------------------------
+    # Short enough that a stolen access token is worth little, long enough that
+    # the refresh round trip is not on every request.
+    access_token_minutes: int = field(
+        default_factory=lambda: int(os.getenv("ACCESS_TOKEN_MINUTES", "15"))
+    )
+    refresh_token_days: int = field(
+        default_factory=lambda: int(os.getenv("REFRESH_TOKEN_DAYS", "7"))
+    )
+    # The window between "your password was right" and "here is your code".
+    two_factor_token_minutes: int = field(
+        default_factory=lambda: int(os.getenv("TWO_FACTOR_TOKEN_MINUTES", "5"))
+    )
+    # Set only when the browser and the API are on different hosts.
+    cookie_domain: str = field(default_factory=lambda: os.getenv("COOKIE_DOMAIN", ""))
+    # Off in development because localhost is not https; on everywhere else.
+    cookie_secure: bool = field(
+        default_factory=lambda: os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    )
+    # Signing key for access tokens. Falls back to SECRET_KEY so a fresh install
+    # works, but they should differ: one seals data, the other mints identity.
+    jwt_secret: str = field(
+        default_factory=lambda: os.getenv("JWT_SECRET", "")
+        or os.getenv("SECRET_KEY", "dev-insecure-key")
+    )
+    # Off in the test suite, which signs up hundreds of times from one address.
+    # A dedicated test switches it back on to prove it still refuses.
+    rate_limits_enabled: bool = field(
+        default_factory=lambda: os.getenv("RATE_LIMITS", "on").lower() not in {"off", "false", "0"}
+    )
+    login_attempts_per_minute: str = field(
+        default_factory=lambda: os.getenv("LOGIN_RATE_LIMIT", "10/minute")
+    )
+    signup_attempts_per_hour: str = field(
+        default_factory=lambda: os.getenv("SIGNUP_RATE_LIMIT", "20/hour")
+    )
+    # Consecutive failures before an account stops answering for a while. The
+    # rate limit protects the endpoint; this protects one account from a slow
+    # distributed guess that never trips a per-IP limit.
+    max_failed_logins: int = field(
+        default_factory=lambda: int(os.getenv("MAX_FAILED_LOGINS", "8"))
+    )
+    lockout_minutes: int = field(default_factory=lambda: int(os.getenv("LOCKOUT_MINUTES", "15")))
+
     @property
     def workspaces_dir(self) -> str:
         return os.path.join(self.data_dir, "workspaces")

@@ -10,7 +10,7 @@ from models import Document, DocumentVersion
 from services import events
 from services.identity import slugify
 
-from . import serializers
+from . import lookups, serializers
 from .companies import get_company
 
 router = APIRouter(tags=["wiki"])
@@ -83,7 +83,7 @@ def create_document(company_id: str, payload: DocumentIn, db: Session = Depends(
 
 @router.get("/documents/{document_id}")
 def read_document(document_id: str, db: Session = Depends(get_db)):
-    document = db.get(Document, document_id)
+    document = lookups.document(db, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Page not found.")
     versions = list(
@@ -108,7 +108,7 @@ def read_document(document_id: str, db: Session = Depends(get_db)):
 
 @router.patch("/documents/{document_id}")
 def update_document(document_id: str, payload: DocumentPatch, db: Session = Depends(get_db)):
-    document = db.get(Document, document_id)
+    document = lookups.document(db, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Page not found.")
     changes = payload.model_dump(exclude_unset=True)
@@ -140,7 +140,7 @@ def update_document(document_id: str, payload: DocumentPatch, db: Session = Depe
 
 @router.delete("/documents/{document_id}", status_code=204)
 def delete_document(document_id: str, db: Session = Depends(get_db)):
-    document = db.get(Document, document_id)
+    document = lookups.document(db, document_id)
     if not document:
         raise HTTPException(status_code=404, detail="Page not found.")
     db.delete(document)

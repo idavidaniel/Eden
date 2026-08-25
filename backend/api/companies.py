@@ -16,6 +16,7 @@ from services import events, identity, packs
 from services import roles as roles_service
 
 from . import serializers
+from .deps import Caller, UserPrincipal, current_caller, current_user
 
 router = APIRouter(tags=["companies"])
 
@@ -104,10 +105,11 @@ SURNAMES = [
 ]
 
 
-def unique_slug(db: Session, name: str) -> str:
-    base = identity.slugify(name, "company")
+def unique_slug(db: Session, name: str, model=Company) -> str:
+    """A slug nothing else of this kind is using. Tenants need one too."""
+    base = identity.slugify(name, "company" if model is Company else "org")
     slug, counter = base, 2
-    while db.scalar(select(Company.id).where(Company.slug == slug)):
+    while db.scalar(select(model.id).where(model.slug == slug)):
         slug, counter = f"{base}-{counter}", counter + 1
     return slug
 
@@ -190,9 +192,24 @@ def company_stats(db: Session, company_id: str) -> dict:
 
 
 def get_company(db: Session, company_id: str) -> Company:
+    """The company, if it belongs to whoever is asking.
+
+    The caller comes from the request-scoped contextvar rather than an argument,
+    so no call site can forget to pass it. Another tenant's company answers 404
+    rather than 403: "that exists but is not yours" is itself information, and
+    would turn this into a way to enumerate other people's companies.
+    """
+    from .scope import require_caller
+
+    who = require_caller()
     company = db.get(Company, company_id)
-    if not company:
+    if not company or company.tenant_id != who.tenant_id:
         raise HTTPException(status_code=404, detail="Company not found.")
+    if who.agent and who.agent.company.id != company.id:
+        raise HTTPException(
+            status_code=403,
+            detail="That token belongs to an employee of a different company.",
+        )
     return company
 
 
@@ -255,16 +272,32 @@ def company_roles(company_id: str, db: Session = Depends(get_db)):
 
 
 @router.get("/companies")
-def list_companies(db: Session = Depends(get_db)):
-    rows = list(db.scalars(select(Company).order_by(Company.created_at.desc())))
+def list_companies(
+    db: Session = Depends(get_db),
+    who: Caller = Depends(current_caller),
+):
+    """Your organisation's companies. Never anybody else's."""
+    rows = list(
+        db.scalars(
+            select(Company)
+            .where(Company.tenant_id == who.tenant_id)
+            .order_by(Company.created_at.desc())
+        )
+    )
     return [serializers.company(row, company_stats(db, row.id)) for row in rows]
 
 
 @router.post("/companies", status_code=201)
-def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
+def create_company(
+    payload: CompanyIn,
+    db: Session = Depends(get_db),
+    principal: UserPrincipal = Depends(current_user),
+):
+    """Found a company. A person does this; an agent cannot found its own."""
     try:
         company = found_company(
             db,
+            tenant_id=principal.tenant_id,
             name=payload.name,
             pack=payload.pack,
             starting_team=payload.starting_team,
@@ -282,6 +315,7 @@ def create_company(payload: CompanyIn, db: Session = Depends(get_db)):
 def found_company(
     db: Session,
     *,
+    tenant_id: str,
     name: str,
     pack: str | None = None,
     starting_team: list[str] | None = None,
@@ -299,6 +333,7 @@ def found_company(
     chosen = packs.get_pack(pack)
 
     company = Company(
+        tenant_id=tenant_id,
         name=name,
         slug=unique_slug(db, name),
         tagline=tagline,

@@ -153,13 +153,17 @@ def run_suite(
     db: Session,
     suite: Suite,
     *,
+    tenant_id: str,
     arms: tuple[bool, ...] = (True, False),
     label: str = "",
 ) -> dict:
     """Run every brief once per arm, in a throwaway company per arm."""
     started = time.perf_counter()
     stamp = label or datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    results = [_run_arm(db, suite, memory=memory, stamp=stamp) for memory in arms]
+    results = [
+        _run_arm(db, suite, memory=memory, stamp=stamp, tenant_id=tenant_id)
+        for memory in arms
+    ]
 
     return {
         "suite": suite.key,
@@ -173,13 +177,16 @@ def run_suite(
     }
 
 
-def _run_arm(db: Session, suite: Suite, *, memory: bool, stamp: str) -> ArmResult:
+def _run_arm(
+    db: Session, suite: Suite, *, memory: bool, stamp: str, tenant_id: str
+) -> ArmResult:
     from agents import engine
     from api.companies import found_company
 
     started = time.perf_counter()
     company = found_company(
         db,
+        tenant_id=tenant_id,
         name=f"Eval {suite.name} {'with' if memory else 'without'} memory {stamp}",
         pack=suite.pack,
         starting_team=suite.team or None,

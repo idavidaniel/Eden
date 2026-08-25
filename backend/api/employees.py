@@ -10,7 +10,7 @@ from models import Activity, Employee, Identity, Project, WorkItem
 from services import events
 from services import identity as identity_service
 
-from . import serializers
+from . import lookups, serializers
 
 router = APIRouter(tags=["employees"])
 
@@ -29,7 +29,7 @@ class EmployeePatch(BaseModel):
 
 
 def get_employee(db: Session, employee_id: str) -> Employee:
-    employee = db.get(Employee, employee_id)
+    employee = lookups.employee(db, employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found.")
     return employee

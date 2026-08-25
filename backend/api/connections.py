@@ -15,6 +15,7 @@ from services import connectors, mcp_client, packs, runners
 from services import web as web_service
 from services.roles import TOOLS
 
+from . import lookups
 from .companies import get_company
 
 router = APIRouter(tags=["connections"])
@@ -118,7 +119,7 @@ def upsert_connection(company_id: str, payload: ConnectionIn, db: Session = Depe
 
 @router.post("/connections/{connection_id}/test")
 def test_connection(connection_id: str, db: Session = Depends(get_db)):
-    row = db.get(Connection, connection_id)
+    row = lookups.connection(db, connection_id)
     if not row:
         raise HTTPException(status_code=404, detail="No such connection.")
     result = connectors.test(db, row)
@@ -128,7 +129,7 @@ def test_connection(connection_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/connections/{connection_id}", status_code=204)
 def delete_connection(connection_id: str, db: Session = Depends(get_db)):
-    row = db.get(Connection, connection_id)
+    row = lookups.connection(db, connection_id)
     if not row:
         raise HTTPException(status_code=404, detail="No such connection.")
     db.delete(row)
@@ -160,7 +161,7 @@ def add_mcp_server(company_id: str, payload: McpServerIn, db: Session = Depends(
 
 @router.post("/mcp-servers/{server_id}/refresh")
 def refresh_mcp_server(server_id: str, db: Session = Depends(get_db)):
-    server = db.get(McpServer, server_id)
+    server = lookups.mcp_server(db, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="No such server.")
     result = mcp_client.discover(db, server)
@@ -170,7 +171,7 @@ def refresh_mcp_server(server_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/mcp-servers/{server_id}", status_code=204)
 def remove_mcp_server(server_id: str, db: Session = Depends(get_db)):
-    server = db.get(McpServer, server_id)
+    server = lookups.mcp_server(db, server_id)
     if not server:
         raise HTTPException(status_code=404, detail="No such server.")
     db.delete(server)

@@ -13,3 +13,10 @@ alembic>=1.13
 # Check kinds that are not "run a command": schema validation and industry packs.
 jsonschema>=4.21
 PyYAML>=6.0
+
+# People signing in. Agent credentials are handled by services/crypto.py; these
+# are for humans, where a slow hash and a real token format both matter.
+bcrypt>=4.1
+PyJWT>=2.9
+pyotp>=2.9
+slowapi>=0.1.9

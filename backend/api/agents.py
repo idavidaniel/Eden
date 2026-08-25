@@ -22,7 +22,7 @@ from models.memory import BLOCK_LABELS
 from services import embeddings, packs, pricing, routing, tokens, usage
 from services import memory as memory_service
 
-from . import serializers
+from . import lookups, serializers
 from .deps import AgentPrincipal, authorise_for, get_employee, optional_agent
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -321,7 +321,7 @@ async def stream_task(
 
 
 def _task_of(db: Session, employee: Employee, task_id: str) -> AgentTask:
-    task = db.get(AgentTask, task_id)
+    task = lookups.agent_task(db, task_id)
     if not task or task.employee_id != employee.id:
         raise HTTPException(status_code=404, detail="No such task for this agent.")
     return task

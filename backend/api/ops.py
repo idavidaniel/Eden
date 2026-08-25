@@ -16,7 +16,6 @@ from db import get_db
 from models import (
     AgentMessage,
     AgentTask,
-    Approval,
     Artifact,
     CheckResult,
     Employee,
@@ -30,7 +29,7 @@ from services import artifacts as artifact_service
 from services import checks as check_service
 from services import clock, inbox, ledger, meetings, performance, pricing, usage
 
-from . import serializers
+from . import lookups, serializers
 from .companies import get_company
 
 router = APIRouter(tags=["ops"])
@@ -81,7 +80,7 @@ def needs_you(company_id: str, db: Session = Depends(get_db)):
 
 @router.post("/approvals/{approval_id}/decide")
 def decide(approval_id: str, payload: DecisionIn, db: Session = Depends(get_db)):
-    approval = db.get(Approval, approval_id)
+    approval = lookups.approval(db, approval_id)
     if not approval:
         raise HTTPException(status_code=404, detail="No such approval.")
     if approval.status != "pending":
@@ -235,7 +234,7 @@ def company_performance(company_id: str, db: Session = Depends(get_db)):
 
 @router.get("/employees/{employee_id}/performance")
 def employee_performance(employee_id: str, db: Session = Depends(get_db)):
-    employee = db.get(Employee, employee_id)
+    employee = lookups.employee(db, employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found.")
     return performance.for_employee(db, employee)
@@ -244,7 +243,7 @@ def employee_performance(employee_id: str, db: Session = Depends(get_db)):
 @router.post("/employees/{employee_id}/coach")
 def coach(employee_id: str, db: Session = Depends(get_db)):
     """Propose a change to how this employee works, based on their record."""
-    employee = db.get(Employee, employee_id)
+    employee = lookups.employee(db, employee_id)
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found.")
     proposal = performance.propose_coaching(db, employee)
@@ -293,7 +292,7 @@ def hold_meeting(company_id: str, payload: MeetingIn, db: Session = Depends(get_
 
 @router.get("/meetings/{meeting_id}")
 def read_meeting(meeting_id: str, db: Session = Depends(get_db)):
-    row = db.get(Meeting, meeting_id)
+    row = lookups.meeting(db, meeting_id)
     if not row:
         raise HTTPException(status_code=404, detail="No such meeting.")
     return serializers.meeting(row)
@@ -340,7 +339,7 @@ def reverify_project(
     """
     from services import proof
 
-    project = db.get(Project, project_id)
+    project = lookups.project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     result = proof.reverify(db, project, rerun_checks=rerun_checks)
@@ -353,7 +352,7 @@ def work_record(project_id: str, db: Session = Depends(get_db)):
     """The exportable record: what was asked, what was made, what proved it."""
     from services import proof
 
-    project = db.get(Project, project_id)
+    project = lookups.project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     return proof.work_record(db, project)
@@ -368,7 +367,7 @@ def work_record(project_id: str, db: Session = Depends(get_db)):
 def list_artifacts(
     project_id: str, all_versions: bool = False, db: Session = Depends(get_db)
 ):
-    project = db.get(Project, project_id)
+    project = lookups.project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     rows = artifact_service.for_project(db, project_id, current_only=not all_versions)
@@ -377,7 +376,7 @@ def list_artifacts(
 
 @router.get("/artifacts/{artifact_id}")
 def read_artifact(artifact_id: str, db: Session = Depends(get_db)):
-    row = db.get(Artifact, artifact_id)
+    row = lookups.artifact(db, artifact_id)
     if not row:
         raise HTTPException(status_code=404, detail="No such artifact.")
     versions = list(
@@ -429,7 +428,7 @@ def company_artifacts(
 @router.post("/work-items/{work_item_id}/checks/run")
 def run_checks(work_item_id: str, db: Session = Depends(get_db)):
     """Run this item's checks now. The same code path the platform uses itself."""
-    item = db.get(WorkItem, work_item_id)
+    item = lookups.work_item(db, work_item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Work item not found.")
     project = db.get(Project, item.project_id)
@@ -453,7 +452,7 @@ def work_item_checks(work_item_id: str, db: Session = Depends(get_db)):
     Separate from the POST because looking at the standard a piece of work is
     held to should not cost anything or change anything.
     """
-    item = db.get(WorkItem, work_item_id)
+    item = lookups.work_item(db, work_item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Work item not found.")
     project = db.get(Project, item.project_id)
@@ -582,10 +581,9 @@ def propose_tool(company_id: str, payload: AuthoredToolIn, db: Session = Depends
 @router.post("/authored-tools/{tool_id}/review")
 def review_tool(tool_id: str, payload: ToolReviewIn, db: Session = Depends(get_db)):
     """Approve or refuse. Nothing is callable until this says approved."""
-    from models import AuthoredTool
     from services import authored_tools
 
-    row = db.get(AuthoredTool, tool_id)
+    row = lookups.authored_tool(db, tool_id)
     if not row:
         raise HTTPException(status_code=404, detail="No such tool.")
     try:
@@ -599,10 +597,9 @@ def review_tool(tool_id: str, payload: ToolReviewIn, db: Session = Depends(get_d
 @router.post("/authored-tools/{tool_id}/try")
 def try_tool(tool_id: str, arguments: dict, db: Session = Depends(get_db)):
     """Run an approved tool by hand, to see what it does before trusting it."""
-    from models import AuthoredTool
     from services import authored_tools
 
-    row = db.get(AuthoredTool, tool_id)
+    row = lookups.authored_tool(db, tool_id)
     if not row:
         raise HTTPException(status_code=404, detail="No such tool.")
     try:

@@ -12,7 +12,7 @@ from models.work import TICKET_STATUSES
 from services import events, workspace
 from services.identity import slugify
 
-from . import serializers
+from . import lookups, serializers
 from .companies import get_company
 
 router = APIRouter(tags=["projects"])
@@ -66,7 +66,7 @@ class RunIn(BaseModel):
 
 
 def get_project(db: Session, project_id: str) -> Project:
-    project = db.get(Project, project_id)
+    project = lookups.project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found.")
     return project
@@ -238,7 +238,7 @@ def create_ticket(project_id: str, payload: WorkItemIn, db: Session = Depends(ge
 @router.get("/work-items/{work_item_id}")
 @router.get("/tickets/{work_item_id}", include_in_schema=False)
 def read_ticket(work_item_id: str, db: Session = Depends(get_db)):
-    work_item = db.get(WorkItem, work_item_id)
+    work_item = lookups.work_item(db, work_item_id)
     if not work_item:
         raise HTTPException(status_code=404, detail="WorkItem not found.")
     comments = list(
@@ -262,7 +262,7 @@ def read_ticket(work_item_id: str, db: Session = Depends(get_db)):
 @router.patch("/work-items/{work_item_id}")
 @router.patch("/tickets/{work_item_id}", include_in_schema=False)
 def update_ticket(work_item_id: str, payload: WorkItemPatch, db: Session = Depends(get_db)):
-    work_item = db.get(WorkItem, work_item_id)
+    work_item = lookups.work_item(db, work_item_id)
     if not work_item:
         raise HTTPException(status_code=404, detail="WorkItem not found.")
     changes = payload.model_dump(exclude_unset=True)
@@ -287,7 +287,7 @@ def update_ticket(work_item_id: str, payload: WorkItemPatch, db: Session = Depen
 @router.delete("/work-items/{work_item_id}", status_code=204)
 @router.delete("/tickets/{work_item_id}", status_code=204, include_in_schema=False)
 def delete_ticket(work_item_id: str, db: Session = Depends(get_db)):
-    work_item = db.get(WorkItem, work_item_id)
+    work_item = lookups.work_item(db, work_item_id)
     if not work_item:
         raise HTTPException(status_code=404, detail="WorkItem not found.")
     events.record(
@@ -306,7 +306,7 @@ def delete_ticket(work_item_id: str, db: Session = Depends(get_db)):
 @router.post("/work-items/{work_item_id}/comments", status_code=201)
 @router.post("/tickets/{work_item_id}/comments", status_code=201, include_in_schema=False)
 def comment_ticket(work_item_id: str, payload: CommentIn, db: Session = Depends(get_db)):
-    work_item = db.get(WorkItem, work_item_id)
+    work_item = lookups.work_item(db, work_item_id)
     if not work_item:
         raise HTTPException(status_code=404, detail="WorkItem not found.")
     comment = WorkItemComment(work_item_id=work_item.id, author_label="You", body=payload.body)
@@ -406,7 +406,7 @@ def start_run(project_id: str, payload: RunIn, db: Session = Depends(get_db)):
 
 @router.get("/runs/{run_id}")
 def read_run(run_id: str, db: Session = Depends(get_db)):
-    run = db.get(Run, run_id)
+    run = lookups.run(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
     steps = list(
@@ -417,7 +417,7 @@ def read_run(run_id: str, db: Session = Depends(get_db)):
 
 @router.post("/runs/{run_id}/{action}")
 def control_run(run_id: str, action: str, db: Session = Depends(get_db)):
-    run = db.get(Run, run_id)
+    run = lookups.run(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found.")
     transitions = {"pause": "paused", "resume": "running", "cancel": "cancelling"}

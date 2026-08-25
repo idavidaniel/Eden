@@ -5,8 +5,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from agents import engine
+from api import lookups
 from db import get_db, session
-from models import Project
 from services import events, preview, workspace
 
 from .projects import get_project
@@ -23,7 +23,7 @@ def _run_build(project_id: str) -> None:
     """Background worker: build, then write the result back to the project."""
     db = session()
     try:
-        project = db.get(Project, project_id)
+        project = lookups.project(db, project_id)
         if not project:
             return
         company = project.company
@@ -61,7 +61,7 @@ def _run_build(project_id: str) -> None:
             )
     except Exception as exc:  # never leave the UI spinning
         db.rollback()
-        project = db.get(Project, project_id)
+        project = lookups.project(db, project_id)
         if project:
             project.preview = {"status": "failed", "error": str(exc)[:2000]}
             db.add(project)

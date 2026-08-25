@@ -3,12 +3,18 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from api import agents, chat, companies, connections, employees, ops, preview, projects, wiki
+from api import auth as auth_api
+from api import users as users_api
 from api import workspace as workspace_api
+from api.limits import limiter
+from api.scope import bind_caller
 from config import get_settings
 from db import init_db
 from mcp_registry.auth import AgentTokenMiddleware
@@ -18,6 +24,21 @@ from services import preview as preview_service
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+
+def _rate_limited(request, exc):
+    """Say what happened and when to try again, rather than a bare 429."""
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=429,
+        content={
+            "detail": (
+                "Too many attempts from this address. Wait a moment and try again."
+            ),
+            "limit": str(exc.detail) if hasattr(exc, "detail") else None,
+        },
+    )
 
 
 @asynccontextmanager
@@ -71,6 +92,9 @@ def _release_orphaned_runs() -> None:
 
 
 app = FastAPI(
+    # Every request resolves its caller here, so tenant scoping cannot be
+    # forgotten by a route that did not think to ask for it.
+    dependencies=[Depends(bind_caller)],
     title="Eden — AI employees you can address, and work you can prove",
     version="2.0.0",
     summary=(
@@ -89,7 +113,15 @@ app.add_middleware(
 )
 app.add_middleware(AgentTokenMiddleware)
 
+# Rate limiting for signup and login. `slowapi` needs its limiter on the app and
+# its handler registered, or the decorators silently do nothing.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limited)
+app.add_middleware(SlowAPIMiddleware)
+
 for router in (
+    auth_api.router,
+    users_api.router,
     companies.router,
     employees.router,
     agents.router,
