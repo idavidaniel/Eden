@@ -17,6 +17,10 @@ from services import usage
 
 log = logging.getLogger(__name__)
 
+# Room for the structured answer itself, on top of the reasoning budget. A plan
+# with eight items and acceptance criteria runs to about 2,300 tokens.
+STRUCTURED_ANSWER_TOKENS = 4000
+
 
 class LLMNotConfigured(RuntimeError):
     """Raised when no API key is available for the model provider."""
@@ -167,33 +171,83 @@ def structured_call(
     description: str,
     parameters: dict,
     model: str | None = None,
-    max_tokens: int = 3000,
+    max_tokens: int | None = None,
 ) -> Any:
     """Get structured data by forcing a tool call.
 
     More reliable than asking for JSON in prose: reasoning models narrate before
     answering, and the narration is what breaks a JSON parse. A forced function
     call has nowhere to put prose.
+
+    Reasoning tokens count against `max_tokens`, which is the trap here. This
+    used to ask for a plan in 3000 tokens with thinking left unbounded; the
+    model spent all 3000 thinking, emitted no call, and the run died with
+    "Model did not call submit_plan" — which says nothing about what went wrong.
+
+    So: enough room for the thinking *and* the answer, a bounded reasoning
+    budget, and if it still does not call, one retry with thinking switched off.
+    A forced tool call does not need narration to produce, and the retry both
+    succeeds and costs less than the attempt that failed.
     """
     settings = get_settings()
-    completion = complete(
-        "structured",
-        model=model or settings.model,
-        messages=messages,
-        temperature=0.3,
-        max_tokens=max_tokens,
-        tools=[
-            {
-                "type": "function",
-                "function": {"name": name, "description": description, "parameters": parameters},
-            }
-        ],
-        tool_choice={"type": "function", "function": {"name": name}},
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": name, "description": description, "parameters": parameters},
+        }
+    ]
+    choice = {"type": "function", "function": {"name": name}}
+    # The budget has to leave room for the answer after the thinking, or the
+    # model stops the moment it finishes reasoning and returns nothing at all.
+    ceiling = max_tokens or (settings.reasoning_budget + STRUCTURED_ANSWER_TOKENS)
+
+    attempts = [
+        {
+            "max_tokens": ceiling,
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": True},
+                "reasoning_budget": settings.reasoning_budget,
+            },
+        },
+        # No thinking. Deterministic, cheaper, and the only thing that helps
+        # when the first attempt ran out of room rather than out of ideas.
+        {
+            "max_tokens": ceiling,
+            "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+        },
+    ]
+
+    last = ""
+    for index, options in enumerate(attempts):
+        completion = complete(
+            "structured",
+            model=model or settings.model,
+            messages=messages,
+            temperature=0.3,
+            tools=tools,
+            tool_choice=choice,
+            **options,
+        )
+        choice_out = completion.choices[0]
+        calls = choice_out.message.tool_calls or []
+        if calls:
+            if index:
+                log.info("%s needed a second attempt with thinking off", name)
+            return loads_lenient(calls[0].function.arguments or "{}")
+
+        last = choice_out.finish_reason or "unknown"
+        log.warning(
+            "%s produced no tool call (finish_reason=%s, completion_tokens=%s)",
+            name,
+            last,
+            getattr(getattr(completion, "usage", None), "completion_tokens", "?"),
+        )
+
+    raise ValueError(
+        f"The model would not produce a {name}, even with thinking switched off "
+        f"(it stopped because: {last}). The request may be too large for the "
+        "model's context, or the schema too complex for it to fill in."
     )
-    calls = completion.choices[0].message.tool_calls or []
-    if not calls:
-        raise ValueError(f"Model did not call {name}.")
-    return loads_lenient(calls[0].function.arguments or "{}")
 
 
 def embed(
