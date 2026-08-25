@@ -18,3 +18,7 @@ next-env.d.ts
 
 # OS
 .DS_Store
+
+firebase-debug.log
+firebase-debug.*.log
+dataconnect/.dataconnect/

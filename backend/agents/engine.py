@@ -1024,7 +1024,11 @@ def execute_run(run_id: str) -> None:
             db.add(run)
             db.commit()
             wrap_up(db, run, project, team, company)
-            run.status, run.phase = "completed", "done"
+            # "Completed" has to mean something finished. A run that planned six
+            # items, finished none of them and produced no deliverable is not a
+            # completed run — reporting it as one is the exact failure this
+            # product exists to prevent, committed by the product itself.
+            run.status, run.phase = _closing_status(db, project), "done"
 
         _record_stats(db, run, project)
     except Exception as exc:  # keep the failure visible in the UI
@@ -1050,6 +1054,22 @@ def execute_run(run_id: str) -> None:
 def _pick_reviewer(db: Session, company: Company, team: list[Employee]) -> Employee | None:
     """Whoever reviews here. Not always a QA engineer — a law firm has a partner."""
     return roles.pick_for(db, company, team, capability="review")
+
+
+def _closing_status(db: Session, project: Project) -> str:
+    """`completed` only when the run actually finished something.
+
+    `stalled` is not a failure — nothing broke, and running again may well make
+    progress. It is the honest word for "it stopped without getting anywhere",
+    and it is what stops the dashboard showing a green tick over an empty
+    project.
+    """
+    items = list(db.scalars(select(WorkItem).where(WorkItem.project_id == project.id)))
+    if not items:
+        return "stalled"
+    if any(item.status == "done" for item in items):
+        return "completed"
+    return "stalled"
 
 
 def _record_stats(db: Session, run: Run, project: Project) -> None:

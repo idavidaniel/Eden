@@ -99,7 +99,10 @@ TOOLS = [
         description=(
             "Publish a prose wiki page - a spec, decision record or guide. "
             "Creates it, or adds a version when the title already exists. "
-            "Not a place for source code: code belongs in the workspace."
+            "Not a place for source code: code belongs in the workspace. "
+            "Not a place for a deliverable either: the wiki is what the company "
+            "keeps for itself, and nothing here is checked or version-hashed. "
+            "If it is the output of a work item, use write_deliverable."
         ),
         parameters=obj(
             {

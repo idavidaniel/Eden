@@ -210,7 +210,19 @@ def tool_calls(
     )
     if employee_id:
         query = query.where(ToolCall.employee_id == employee_id)
-    return [serializers.tool_call(row) for row in db.scalars(query)]
+
+    rows = list(db.scalars(query))
+    # One lookup for the whole page rather than one per row.
+    names = {
+        person.id: person.name
+        for person in db.scalars(
+            select(Employee).where(Employee.company_id == company_id)
+        )
+    }
+    return [
+        serializers.tool_call(row, employee_label=names.get(row.employee_id, ""))
+        for row in rows
+    ]
 
 
 @router.get("/companies/{company_id}/sources")

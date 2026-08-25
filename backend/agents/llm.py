@@ -51,24 +51,71 @@ def get_client() -> OpenAI:
     return OpenAI(base_url=settings.nvidia_base_url, api_key=settings.nvidia_api_key, timeout=180)
 
 
+# A rate limit or a bad gateway is the provider having a moment, not the work
+# being wrong. A run that dies on one loses every item after it, so these are
+# waited out rather than raised. Anything else — a bad request, a refused key —
+# is a real answer and comes straight back.
+RETRY_STATUSES = {408, 409, 429, 500, 502, 503, 504}
+MAX_ATTEMPTS = 4
+BACKOFF_SECONDS = 3.0
+
+
+def _retry_after(error: Exception, attempt: int) -> float:
+    """Honour the provider's own Retry-After when it sends one."""
+    headers = getattr(getattr(error, "response", None), "headers", None) or {}
+    for key in ("retry-after", "Retry-After"):
+        if key in headers:
+            try:
+                return min(float(headers[key]), 60.0)
+            except (TypeError, ValueError):
+                break
+    # Exponential, so a provider under load is not hammered by every worker.
+    return BACKOFF_SECONDS * (2 ** (attempt - 1))
+
+
+def _worth_retrying(error: Exception) -> bool:
+    status = getattr(error, "status_code", None) or getattr(
+        getattr(error, "response", None), "status_code", None
+    )
+    return status in RETRY_STATUSES
+
+
 def complete(kind: str = "chat", **kwargs):
     """One completion call, timed and booked against whoever asked for it.
 
     Every model call in the platform goes through here so that no spend is
     invisible — including the ones made by evaluators and the reflection pass.
+
+    Also the one place that waits out a rate limit. A single 429 used to end a
+    whole run mid-execution, taking every unstarted item with it.
     """
     model = kwargs.get("model") or get_settings().model
     started = time.perf_counter()
-    try:
-        completion = get_client().chat.completions.create(**kwargs)
-    except Exception:
-        usage.record(
-            model,
-            kind=kind,
-            latency_ms=int((time.perf_counter() - started) * 1000),
-            ok=False,
-        )
-        raise
+
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            completion = get_client().chat.completions.create(**kwargs)
+            break
+        except Exception as error:
+            if attempt < MAX_ATTEMPTS and _worth_retrying(error):
+                delay = _retry_after(error, attempt)
+                log.warning(
+                    "%s: %s — waiting %.0fs and trying again (%s/%s)",
+                    model,
+                    error,
+                    delay,
+                    attempt,
+                    MAX_ATTEMPTS,
+                )
+                time.sleep(delay)
+                continue
+            usage.record(
+                model,
+                kind=kind,
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                ok=False,
+            )
+            raise
     if kwargs.get("stream"):
         # Token counts arrive in the final chunk; the consumer books them.
         return completion

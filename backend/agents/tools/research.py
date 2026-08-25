@@ -13,6 +13,9 @@ from services import blobs, web
 from .base import Tool, ToolContext, ToolResult, failed, obj, string
 
 EXCERPT_CHARS = 6000
+# Enough attempts to learn the host is blocked, few enough to leave steps for
+# the actual work.
+GIVE_UP_AFTER_REFUSALS = 3
 
 
 def search_web(ctx: ToolContext, query: str, limit: int = 6) -> ToolResult:
@@ -31,15 +34,43 @@ def search_web(ctx: ToolContext, query: str, limit: int = 6) -> ToolResult:
 
     if not results:
         return ToolResult(text=f"No results for '{query}'.")
-    lines = [
-        f"{index + 1}. {item['title']}\n   {item['url']}\n   {item['snippet']}"
-        for index, item in enumerate(results)
-    ]
+
+    # Say which of these can actually be opened. Egress is default-deny, so most
+    # search results are unreachable — and handing an agent ten links it will be
+    # refused ten times is how a turn burns every step on nothing. This is what
+    # happened in practice: 23 fetches, 23 refusals, no deliverable.
+    reachable = 0
+    lines = []
+    for index, item in enumerate(results):
+        allowed, _reason = web.host_allowed(ctx.company, item["url"])
+        item["fetchable"] = allowed
+        reachable += 1 if allowed else 0
+        marker = "" if allowed else "  [cannot be opened — not on the allow-list]"
+        lines.append(
+            f"{index + 1}. {item['title']}{marker}\n   {item['url']}\n   {item['snippet']}"
+        )
+
+    if reachable == 0:
+        header = (
+            f"Results for '{query}'. None of these can be opened: this company's "
+            "allow-list does not include their hosts, so do not try to fetch them. "
+            "Work from the titles and snippets below, say in your write-up that you "
+            "could not read the sources, and use ask_human if a host is genuinely "
+            "needed.\n\n"
+        )
+    elif reachable < len(results):
+        header = (
+            f"Results for '{query}'. {reachable} of {len(results)} can be opened; the "
+            "rest are not on the allow-list and will be refused.\n\n"
+        )
+    else:
+        header = f"Results for '{query}':\n\n"
+
     return ToolResult(
-        text=f"Results for '{query}':\n\n" + "\n".join(lines),
+        text=header + "\n".join(lines),
         # Search snippets are outside text too, even though nothing is stored yet.
         untrusted=True,
-        meta={"results": results},
+        meta={"results": results, "fetchable": reachable},
     )
 
 
@@ -54,6 +85,15 @@ def fetch_url(ctx: ToolContext, url: str) -> ToolResult:
             fetched_by=ctx.employee.id,
         )
     except web.EgressRefused as exc:
+        ctx.refused_fetches += 1
+        if ctx.refused_fetches >= GIVE_UP_AFTER_REFUSALS:
+            return failed(
+                f"{exc}\n\nThat is {ctx.refused_fetches} refusals this turn. The web is "
+                "effectively closed to you here.",
+                "Stop fetching. Produce the deliverable from what you already know and "
+                "from the search snippets, and say plainly in it which claims you could "
+                "not source. Delivering something honest beats delivering nothing.",
+            )
         return failed(
             str(exc),
             "Use a source that is allowed, or say on the work item that you need this host.",

@@ -267,3 +267,28 @@ def fake_embeddings(monkeypatch):
     monkeypatch.setattr(embeddings, "available", lambda: True)
     monkeypatch.setattr(embeddings, "embed_passages", lambda texts: [vector(t) for t in texts])
     monkeypatch.setattr(embeddings, "embed_query", lambda text: vector(text))
+
+@pytest.fixture(autouse=True)
+def no_live_model_calls(request, monkeypatch):
+    """No test may reach the real model provider.
+
+    A suite that makes live calls is slow, costs money, and fails on somebody
+    else's rate limit rather than on the code under test — which is exactly what
+    happened: one test quietly called the provider for months and then started
+    failing with a 429 that had nothing to do with it.
+
+    `scripted_model` and `structured_answers` patch above this, so a test that
+    wants a model just asks for one of them. Anything else that gets this far is
+    a mistake, and says so by name.
+    """
+    from agents import llm
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError(
+            f"{request.node.name} tried to reach the real model provider. "
+            "Use the `scripted_model` or `structured_answers` fixture, or stub "
+            "whatever calls it — the suite must run offline and for free."
+        )
+
+    monkeypatch.setattr(llm, "get_client", refuse)
+    yield

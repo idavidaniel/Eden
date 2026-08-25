@@ -1,0 +1,20 @@
+# Firebase App Hosting.
+#
+# The browser never talks to the backend directly — every call goes through
+# /api/backend/* in this Next server — so API_URL is a server-side secret and
+# the backend needs no CORS entry for this origin.
+runConfig:
+  # The proxy holds server-sent event streams open for minutes at a time.
+  minInstances: 0
+  maxInstances: 2
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 512
+
+env:
+  - variable: API_URL
+    # Point this at wherever the backend actually runs. It is not public: it is
+    # read by the Next server, never sent to the browser.
+    secret: EDEN_API_URL
+    availability:
+      - RUNTIME

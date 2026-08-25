@@ -471,18 +471,45 @@ def role(row: Role) -> dict:
     }
 
 
-def tool_call(row: ToolCall) -> dict:
+def tool_call(row: ToolCall, employee_label: str = "") -> dict:
+    # `group` and `blocked_reason` are derived rather than stored. The audit
+    # table records what happened; which group a tool belongs to is a property
+    # of the registry, and "was this refused by policy" is a reading of the
+    # error. Both are what the ops page shows, so they are computed once here
+    # instead of in the browser.
+    from agents.tools import BY_NAME
+
+    tool = BY_NAME.get(row.tool)
+    refused = bool(
+        not row.ok
+        and row.error
+        and any(
+            phrase in row.error
+            for phrase in (
+                "not on this company's allow-list",
+                "is not available for the rest of this turn",
+                "does not have access to",
+                "is halted",
+                "never fetchable",
+            )
+        )
+    )
     return {
         "id": row.id,
         "employee_id": row.employee_id,
+        "employee_label": employee_label or "Someone",
         "project_id": row.project_id,
         "work_item_id": row.work_item_id,
         "run_id": row.run_id,
         "task_id": row.task_id,
         "tool": row.tool,
+        "group": tool.group if tool else "",
         "arguments": row.arguments or {},
         "ok": row.ok,
         "error": row.error,
+        # Refused by a rule, as opposed to attempted and failed. The difference
+        # matters: one is the platform working, the other is something broken.
+        "blocked_reason": row.error if refused else None,
         "result_preview": row.result_preview,
         "duration_ms": row.duration_ms,
         "created_at": iso(row.created_at),

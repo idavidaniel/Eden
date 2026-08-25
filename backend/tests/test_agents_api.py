@@ -154,7 +154,11 @@ def test_a_garbled_token_is_not_a_crash(client, company):
         db.close()
 
 
-def test_switching_off_api_access_locks_the_agent_out(client, company):
+def test_switching_off_api_access_locks_the_agent_out(client, company, scripted_model):
+    # `scripted_model` is not incidental: without it this reaches the real
+    # provider, and a test suite that makes live API calls fails on somebody
+    # else's rate limit rather than on the code under test.
+    scripted_model.queue.append("Still reachable as you.")
     employee = _employees(client, company)[0]
     secret = _mint(client, employee["id"])["token"]
     client.patch(f"/agents/{employee['id']}/config", json={"api_enabled": False})

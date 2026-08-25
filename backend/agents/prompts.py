@@ -211,15 +211,23 @@ How you work:
 def work_item_prompt(work_item: WorkItem, project: Project) -> str:
     deliverable = (work_item.deliverable_spec or {}).get("artifact_kind")
     expected = (
-        f"\nThis item is expected to produce a `{deliverable}`. File it with "
-        "write_deliverable (or, for code, write it into the workspace) before you finish.\n"
+        f"This item is expected to produce a `{deliverable}`.\n\n"
         if deliverable
         else ""
     )
     return f"""This is your work item. Complete it now, using your tools.
 
-{expected}Produce the actual deliverable. A work item with nothing behind it is rejected —
-a reviewer will look, and so will the platform's checks.
+{expected}Whatever you produce, file it with **write_deliverable** — or, for code, write it
+into the workspace and commit. That is what gets checked, versioned and pinned to
+its content hash, and it is the only thing that counts as output.
+
+write_wiki_page is not that. The wiki is for notes the company keeps for itself:
+conventions, decisions, background. Publishing your work there instead leaves this
+item with nothing behind it, so nothing can verify it and the reviewer will send it
+back. If the work is worth writing down twice, file the deliverable first.
+
+A work item with no deliverable is rejected — a reviewer will look, and so will the
+platform's checks.
 
 Set the item to in_review when the work is done, and record a one-line result."""
 

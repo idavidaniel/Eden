@@ -58,6 +58,9 @@ class ToolContext:
     step_id: str | None = None
     # True once something in this turn pulled in text from outside the platform.
     tainted: bool = False
+    # Refusals in this turn, so a tool can notice the agent is stuck in a loop
+    # and say so instead of repeating the same refusal until the steps run out.
+    refused_fetches: int = 0
 
     @property
     def actor(self) -> str:

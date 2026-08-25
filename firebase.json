@@ -1,0 +1,21 @@
+{
+  "hosting": {
+    "source": "frontend",
+    "ignore": [
+      "**/.git/**",
+      "**/node_modules/**",
+      "**/.next/cache/**"
+    ],
+    "frameworksBackend": {
+      "region": "us-east4"
+    }
+  },
+  "emulators": {
+    "dataconnect": {
+      "dataDir": "dataconnect/.dataconnect/pgliteData"
+    }
+  },
+  "dataconnect": {
+    "source": "dataconnect"
+  }
+}
