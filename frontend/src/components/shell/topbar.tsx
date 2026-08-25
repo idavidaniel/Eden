@@ -52,7 +52,7 @@ export function TopBar({
     onError: (error: Error) => toast.show("error", error.message),
   });
 
-  const spendToday = ops?.spend?.today?.cost_micros ?? 0;
+  const spendToday = ops?.usage?.today?.cost_micros ?? 0;
 
   return (
     <header

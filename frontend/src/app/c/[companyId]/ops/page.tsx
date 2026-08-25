@@ -432,15 +432,27 @@ function ClockPanel({ companyId }: { companyId: string }) {
         </div>
       </Panel>
 
-      {ops.data?.tasks ? (
+      {ops.data?.tasks?.length ? (
         <Panel>
-          <PanelHeader title="Task queue" />
+          <PanelHeader
+            title="Task queue"
+            hint={`${ops.data.in_flight} in flight, of the ${ops.data.tasks.length} most recent`}
+          />
           <div className="flex flex-wrap gap-2 p-4">
-            {Object.entries(ops.data.tasks).map(([status, total]) => (
-              <Badge key={status} tone={status === "failed" ? "fail" : "neutral"}>
-                {status} <span className="tnum">{total}</span>
-              </Badge>
-            ))}
+            {/* The API sends the tasks themselves, newest first; the counts per
+                status are ours to derive. */}
+            {Object.entries(
+              ops.data.tasks.reduce<Record<string, number>>((counts, task) => {
+                counts[task.status] = (counts[task.status] ?? 0) + 1;
+                return counts;
+              }, {}),
+            )
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([status, total]) => (
+                <Badge key={status} tone={status === "failed" ? "fail" : "neutral"}>
+                  {status} <span className="tnum">{total}</span>
+                </Badge>
+              ))}
           </div>
         </Panel>
       ) : null}
@@ -456,7 +468,7 @@ function Spend({ companyId }: { companyId: string }) {
     queryKey: keys.performance(companyId),
     queryFn: () => api.companies.performance(companyId),
   });
-  const spend = ops.data?.spend;
+  const spend = ops.data?.usage;
 
   return (
     <div className="space-y-4">
@@ -478,7 +490,8 @@ function Spend({ companyId }: { companyId: string }) {
         />
       </StatRow>
       <p className="text-xs text-faint">
-        {spend?.note ?? "Cost is an estimate from a configurable rate table; tokens are measured."}
+        {ops.data?.cost_note ??
+          "Cost is an estimate from a configurable rate table; tokens are measured."}
       </p>
 
       <Panel>

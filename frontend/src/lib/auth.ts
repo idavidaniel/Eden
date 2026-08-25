@@ -87,6 +87,8 @@ export const auth = {
 };
 
 async function post<T>(path: string, body?: unknown): Promise<T> {
+  // No refresh-and-retry here on purpose: these *are* the session endpoints,
+  // and a 401 from one of them is the answer rather than a stale token.
   const response = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

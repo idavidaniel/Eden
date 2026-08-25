@@ -96,8 +96,8 @@ export default function Overview({ params }: { params: Promise<{ companyId: stri
         <Stat
           icon={<Banknote size={11} />}
           label="Spent today"
-          value={money(ops.data?.spend?.today?.cost_micros ?? 0)}
-          hint={`${money(ops.data?.spend?.month?.cost_micros ?? 0)} this month`}
+          value={money(ops.data?.usage?.today?.cost_micros ?? 0)}
+          hint={`${money(ops.data?.usage?.month?.cost_micros ?? 0)} this month`}
           href={at("/ops")}
         />
       </StatRow>

@@ -69,7 +69,11 @@ export function AgentBrain({ employeeId }: { employeeId: string }) {
             title="Retrieved on demand"
             hint={
               memory.data
-                ? `${memory.data.counts?.total ?? 0} kept · ${
+                ? `${memory.data.counts.total} kept${
+                    memory.data.counts.showing < memory.data.counts.total
+                      ? `, ${memory.data.counts.showing} shown`
+                      : ""
+                  } · ${
                     memory.data.retrieval_mode === "vector"
                       ? "searched by meaning"
                       : "searched by words (no embedding model)"

@@ -172,3 +172,156 @@ def test_every_migration_downgrades_and_upgrades_again(scratch_database):
     command.upgrade(config, "head")
     command.downgrade(config, "0001")
     command.upgrade(config, "head")
+
+# --------------------------------------------------------------------------
+# adopting a database that predates the migrations
+# --------------------------------------------------------------------------
+
+# What a database looks like when it ran an *earlier version* of migration 0002
+# — the one that gave the ledger a UUID primary key and `seq` as an ordinary
+# column, before the model changed. Migration 0007 exists to repair exactly
+# this, and until 0010 its repair left the ledger unwritable: it dropped the old
+# primary key without giving `seq` a sequence or making it the key.
+#
+# These tests only ever ran forward from empty, which is why nobody noticed.
+LEGACY_LEDGER = """
+CREATE TABLE ledger (
+    id varchar(36) NOT NULL PRIMARY KEY,
+    seq bigint NOT NULL,
+    company_id varchar(36) NOT NULL,
+    project_id varchar(36),
+    height integer NOT NULL,
+    prev_hash varchar(64) NOT NULL,
+    hash varchar(64) NOT NULL,
+    kind varchar(40) NOT NULL,
+    actor_id varchar(36),
+    actor_label varchar(160) NOT NULL,
+    subject_kind varchar(40),
+    subject_id varchar(36),
+    payload json NOT NULL,
+    at timestamptz NOT NULL,
+    CONSTRAINT ledger_company_id_fkey FOREIGN KEY (company_id)
+        REFERENCES companies(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX ix_ledger_seq ON ledger (seq);
+CREATE INDEX ix_ledger_company_id ON ledger (company_id);
+CREATE INDEX ix_ledger_project_id ON ledger (project_id);
+CREATE INDEX ix_ledger_hash ON ledger (hash);
+CREATE INDEX ix_ledger_kind ON ledger (kind);
+CREATE INDEX ix_ledger_subject_id ON ledger (subject_id);
+"""
+
+
+def _adopt_legacy(url: str) -> None:
+    """Migrate up to just before the repair, then put the old ledger back.
+
+    The real database got here by running a version of 0002 that has since been
+    edited. Rewriting the table at 0006 reproduces that state faithfully, which
+    is the only way to exercise what 0007 actually has to fix.
+    """
+    from alembic import command
+
+    engine = sa.create_engine(url)
+    with engine.connect() as connection:
+        connection.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
+        connection.commit()
+    engine.dispose()
+
+    command.upgrade(_config(), "0006")
+
+    engine = sa.create_engine(url)
+    with engine.connect() as connection:
+        connection.execute(sa.text("DROP TABLE IF EXISTS ledger CASCADE"))
+        for statement in LEGACY_LEDGER.strip().split(";"):
+            if statement.strip():
+                connection.execute(sa.text(statement))
+        # `projects.preview` was nullable then too.
+        connection.execute(sa.text("ALTER TABLE projects ALTER COLUMN preview DROP NOT NULL"))
+        connection.commit()
+    engine.dispose()
+
+
+def test_a_database_that_predates_the_migrations_can_still_be_migrated(scratch_database):
+    from alembic import command
+
+    _adopt_legacy(scratch_database)
+    command.upgrade(_config(), "head")
+
+    engine = sa.create_engine(scratch_database)
+    inspector = sa.inspect(engine)
+    columns = {column["name"] for column in inspector.get_columns("ledger")}
+    assert "id" not in columns, "the old primary key should have been dropped"
+    assert "seq" in columns
+    engine.dispose()
+
+
+def test_the_adopted_ledger_can_actually_be_written_to(scratch_database):
+    """The bug this caught: `seq` with no sequence and no primary key.
+
+    Every append failed on a not-null violation, so nothing could be recorded —
+    in a system whose entire claim is that it records what happened.
+    """
+    from alembic import command
+
+    _adopt_legacy(scratch_database)
+    command.upgrade(_config(), "head")
+
+    engine = sa.create_engine(scratch_database)
+    with engine.connect() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO tenants (id, name, slug, is_bootstrap, settings) "
+                "VALUES ('t1', 'T', 't', false, '{}')"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO companies (id, tenant_id, name, slug, pack_key, departments, "
+                "work_item_kinds, settings, halted, created_at, updated_at) "
+                "VALUES ('c1', 't1', 'C', 'c', 'blank', '[]', '[]', '{}', false, now(), now())"
+            )
+        )
+        # No `seq` supplied, exactly as the application appends.
+        for height in range(3):
+            connection.execute(
+                sa.text(
+                    "INSERT INTO ledger (company_id, height, prev_hash, hash, kind, "
+                    "actor_label, payload, at) "
+                    "VALUES ('c1', :h, 'p', :hash, 'k', 'You', '{}', now())"
+                ),
+                {"h": height, "hash": f"hash-{height}"},
+            )
+        connection.commit()
+
+        assigned = list(
+            connection.execute(sa.text("SELECT seq FROM ledger ORDER BY seq")).scalars()
+        )
+
+    engine.dispose()
+    assert len(assigned) == 3
+    assert all(value is not None for value in assigned)
+    assert assigned == sorted(assigned), "seq must increase, or the chain has no order"
+
+
+def test_the_adopted_schema_matches_a_freshly_migrated_one(scratch_database):
+    """Adopting an old database must land in the same place as starting clean."""
+    from alembic import command
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    import models  # noqa: F401
+    from migrations.filters import include_object
+    from models.base import Base
+
+    _adopt_legacy(scratch_database)
+    command.upgrade(_config(), "head")
+
+    engine = sa.create_engine(scratch_database)
+    with engine.connect() as connection:
+        context = MigrationContext.configure(
+            connection,
+            opts={"include_object": include_object, "compare_type": False},
+        )
+        differences = compare_metadata(context, Base.metadata)
+    engine.dispose()
+    assert differences == [], f"an adopted database drifted from the models: {differences}"

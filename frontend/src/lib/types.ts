@@ -393,7 +393,9 @@ export interface Role {
   toolbelt: string[];
   capabilities: string[];
   manages: boolean;
-  position: number;
+  persona?: string;
+  /** Absent from `/packs`, which serves pack definitions rather than DB rows. */
+  position?: number;
 }
 
 export interface Pack {
@@ -446,6 +448,8 @@ export interface UsageWindow {
   prompt_tokens: number;
   completion_tokens: number;
   cost_micros: number;
+  /** Preformatted by the API, which owns the rate table. */
+  display?: string;
 }
 
 export interface Performance {
@@ -545,8 +549,19 @@ export interface OpsSnapshot {
     last_error: string | null;
     tick_seconds: number;
   };
-  tasks: Record<string, number>;
-  employees: Record<string, number>;
-  spend: Usage;
-  [key: string]: unknown;
+  /** The most recent tasks, newest first — not a count per status. */
+  tasks: AgentTask[];
+  in_flight: number;
+  checks: CheckResult[];
+  usage: { today: UsageWindow; month: UsageWindow; all_time: UsageWindow };
+  by_employee: {
+    employee_id: string;
+    name: string;
+    calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    cost_micros: number;
+    display: string;
+  }[];
+  cost_note: string;
 }

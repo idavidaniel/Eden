@@ -152,7 +152,7 @@ function FoundDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
   const [team, setTeam] = useState<string[]>([]);
 
   const packs = useQuery({ queryKey: ["packs"], queryFn: api.packs, enabled: open });
-  const pack: Pack | undefined = packs.data?.packs.find((entry) => entry.key === packKey);
+  const pack: Pack | undefined = packs.data?.find((entry) => entry.key === packKey);
 
   const found = useMutation({
     mutationFn: () =>
@@ -208,7 +208,7 @@ function FoundDialog({ open, onClose }: { open: boolean; onClose: () => void }) 
 
         <Field label="Industry" hint={pack?.description}>
           <Select value={packKey} onChange={(event) => choosePack(event.target.value)}>
-            {(packs.data?.packs ?? []).map((entry) => (
+            {(packs.data ?? []).map((entry) => (
               <option key={entry.key} value={entry.key}>
                 {entry.name}
               </option>

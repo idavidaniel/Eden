@@ -369,10 +369,29 @@ def read_memory(
             )
         ]
 
+    # Counted rather than measured from `rows`: the list above is capped, so
+    # `rows` would under-report the moment an agent knows more than a page's
+    # worth — and "8 kept" under a list of 8 looks right while being wrong.
+    from sqlalchemy import func
+
+    mine = (
+        Memory.company_id == employee.company_id,
+        (Memory.employee_id == employee.id) | (Memory.employee_id.is_(None)),
+        Memory.archived_at.is_(None),
+    )
+    by_kind = db.execute(
+        select(Memory.kind, func.count()).where(*mine).group_by(Memory.kind)
+    ).all()
+
     return {
         "blocks": [serializers.memory_block(block) for block in blocks],
         "memories": rows,
         "retrieval_mode": mode,
+        "counts": {
+            "total": sum(count for _kind, count in by_kind),
+            "showing": len(rows),
+            **{kind: count for kind, count in by_kind},
+        },
         "embeddings": embeddings.status(),
     }
 

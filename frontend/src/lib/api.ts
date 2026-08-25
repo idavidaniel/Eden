@@ -47,14 +47,53 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${BASE}${path}`, {
+/**
+ * One refresh at a time.
+ *
+ * An access token lasts fifteen minutes and a page can have half a dozen
+ * queries in flight when it lapses. Without this they would each try to refresh,
+ * and because refresh tokens rotate, the second one to arrive would be a replay
+ * — which the API correctly treats as theft and responds to by ending every
+ * session. The fix for "signed out every fifteen minutes" must not be "signed
+ * out immediately".
+ */
+let refreshing: Promise<boolean> | null = null;
+
+function refreshSession(): Promise<boolean> {
+  refreshing ??= fetch(`${BASE}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+    cache: "no-store",
+  })
+    .then((response) => response.ok)
+    .catch(() => false)
+    .finally(() => {
+      refreshing = null;
+    });
+  return refreshing;
+}
+
+async function send(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     // The session lives in HTTP-only cookies, so every call has to send them.
     credentials: "include",
     cache: "no-store",
   });
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let response = await send(path, init);
+
+  // A 401 usually means the access token lapsed, not that the person is signed
+  // out — the refresh cookie lasts a week. Exchange it and try once more.
+  // Never for the auth endpoints themselves, which would recurse.
+  if (response.status === 401 && !path.startsWith("/auth/")) {
+    if (await refreshSession()) {
+      response = await send(path, init);
+    }
+  }
 
   if (!response.ok) {
     let detail = `Request failed (${response.status})`;
@@ -99,7 +138,8 @@ export const api = {
       runners: Record<string, unknown>;
     }>("/health"),
 
-  packs: () => get<{ packs: Pack[] }>("/packs"),
+  // A bare list, not an envelope. Checked against the running API.
+  packs: () => get<Pack[]>("/packs"),
 
   companies: {
     list: () => get<Company[]>("/companies"),
@@ -130,13 +170,18 @@ export const api = {
     toolCalls: (id: string, limit = 100) =>
       get<ToolCall[]>(`/companies/${id}/tool-calls${query({ limit })}`),
     sources: (id: string, limit = 100) => get<Source[]>(`/companies/${id}/sources${query({ limit })}`),
-    performance: (id: string) => get<{ employees: Performance[] }>(`/companies/${id}/performance`),
+    performance: (id: string) =>
+      get<{ employees: Performance[]; ranked: Performance[]; totals: Record<string, number> }>(
+        `/companies/${id}/performance`,
+      ),
     artifacts: (id: string, kind?: string) =>
       get<{ artifacts: Artifact[]; by_kind: Record<string, number> }>(
         `/companies/${id}/artifacts${query({ kind })}`,
       ),
     ledger: (id: string, limit = 100) =>
-      get<{ entries: LedgerEntry[]; head: string | null }>(`/companies/${id}/ledger${query({ limit })}`),
+      get<{ entries: LedgerEntry[]; tip: string | null; height: number }>(
+        `/companies/${id}/ledger${query({ limit })}`,
+      ),
     verifyLedger: (id: string) => post<ChainVerdict>(`/companies/${id}/ledger/verify`),
     meetings: (id: string) => get<Meeting[]>(`/companies/${id}/meetings`),
     hold: (id: string, body: Record<string, unknown>) => post<Meeting>(`/companies/${id}/meetings`, body),
@@ -195,7 +240,9 @@ export const api = {
         blocks: MemoryBlock[];
         memories: Memory[];
         retrieval_mode: string;
+        /** `total` and `showing` differ once an agent knows more than a page. */
         counts: Record<string, number>;
+        embeddings: { available: boolean; model?: string; reason?: string };
       }>(`/agents/${id}/memory${query({ query: search })}`),
     setBlock: (id: string, label: string, body: { content: string; pinned?: boolean }) =>
       put<MemoryBlock>(`/agents/${id}/memory/blocks/${label}`, body),
