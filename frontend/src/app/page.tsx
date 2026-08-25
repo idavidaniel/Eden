@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, OctagonX, Plus, Users } from "lucide-react";
+import { Building2, LogOut, OctagonX, Plus, UserRound, Users } from "lucide-react";
 import { api } from "@/lib/api";
 import { timeAgo } from "@/lib/format";
 import { keys } from "@/lib/hooks";
+import { useSession } from "@/lib/session";
 import type { Pack } from "@/lib/types";
 import {
   Badge,
@@ -26,6 +27,7 @@ import {
 import { useToast } from "@/components/ui/toast";
 
 export default function Companies() {
+  const { account, signOut, signingOut } = useSession();
   const [founding, setFounding] = useState(false);
   const companies = useQuery({ queryKey: keys.companies, queryFn: api.companies.list });
   const health = useQuery({ queryKey: keys.health, queryFn: api.health });
@@ -33,15 +35,39 @@ export default function Companies() {
   return (
     <div className="mx-auto max-w-5xl px-6 py-12">
       <PageHeader
-        eyebrow="Eden"
+        eyebrow={account?.tenant.name ?? "Eden"}
         title="Your companies"
         hint="Each one is staffed by AI employees whose work is checked before it counts as done."
         action={
-          <Button variant="primary" icon={<Plus size={14} />} onClick={() => setFounding(true)}>
-            Found a company
-          </Button>
+          <>
+            <Button icon={<UserRound size={14} />}>
+              <Link href="/profile">Account</Link>
+            </Button>
+            <Button
+              variant="quiet"
+              icon={<LogOut size={14} />}
+              busy={signingOut}
+              onClick={signOut}
+            >
+              Sign out
+            </Button>
+            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setFounding(true)}>
+              Found a company
+            </Button>
+          </>
         }
       />
+
+      {account && !account.two_factor.enabled ? (
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-sunken px-4 py-3">
+          <p className="flex-1 text-sm text-muted">
+            Your account is protected by a password alone. Two-factor takes a minute to set up.
+          </p>
+          <Button size="sm">
+            <Link href="/profile">Turn it on</Link>
+          </Button>
+        </div>
+      ) : null}
 
       {health.data && !health.data.llm_configured ? (
         <div className="mb-5 rounded-lg border border-line bg-pending-wash px-4 py-3 text-sm text-pending">

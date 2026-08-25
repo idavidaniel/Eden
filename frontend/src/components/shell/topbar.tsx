@@ -7,16 +7,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   ChevronsUpDown,
+  LogOut,
   Menu,
   MonitorCog,
   Moon,
   OctagonX,
   Play,
   Sun,
+  UserRound,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { money } from "@/lib/format";
 import { keys, useTheme } from "@/lib/hooks";
+import { useSession } from "@/lib/session";
 import type { Company, OpsSnapshot } from "@/lib/types";
 import { Badge, Button, Dot, cx } from "@/components/ui";
 import { useToast } from "@/components/ui/toast";
@@ -112,6 +115,7 @@ export function TopBar({
       </Button>
 
       <ThemeSwitch />
+      <AccountMenu />
 
       <CompanySwitcher
         open={switching}
@@ -121,6 +125,71 @@ export function TopBar({
     </header>
   );
 }
+
+function AccountMenu() {
+  const { account, signOut, signingOut } = useSession();
+  const [open, setOpen] = useState(false);
+  if (!account) return null;
+
+  const initials = (account.full_name || account.email)
+    .split(/[\s@.]+/)
+    .map((part) => part[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-label="Your account"
+        className="grid size-7 shrink-0 place-items-center rounded-full bg-accent-wash text-[0.65rem] font-semibold text-accent transition-opacity hover:opacity-80"
+      >
+        {initials}
+      </button>
+
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} aria-hidden="true" />
+          <div className="absolute top-[var(--topbar)] right-3 z-50 w-60 rounded-lg border border-line bg-surface py-1 shadow-[var(--shadow-lifted)]">
+            <div className="border-b border-line px-3 py-2">
+              <p className="truncate text-sm font-medium text-ink">
+                {account.full_name || "Your account"}
+              </p>
+              <p className="truncate text-xs text-faint">{account.email}</p>
+              <p className="mt-1 truncate text-xs text-muted">{account.tenant.name}</p>
+            </div>
+            <Link
+              href="/profile"
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2 px-3 py-2 text-sm text-ink transition-colors hover:bg-sunken"
+            >
+              <UserRound size={14} className="text-faint" />
+              Your account
+              {account.two_factor.enabled ? null : (
+                <Badge tone="pending" className="ml-auto">
+                  2FA off
+                </Badge>
+              )}
+            </Link>
+            <button
+              type="button"
+              onClick={signOut}
+              disabled={signingOut}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-sunken disabled:opacity-50"
+            >
+              <LogOut size={14} className="text-faint" />
+              Sign out
+            </button>
+          </div>
+        </>
+      ) : null}
+    </>
+  );
+}
+
 
 function ThemeSwitch() {
   const { theme, choose } = useTheme();

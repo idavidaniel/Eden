@@ -41,6 +41,13 @@ services:
       DATA_DIR: /data
       # Seals employee credentials at rest. Change it for anything real.
       SECRET_KEY: ${SECRET_KEY:-dev-insecure-key}
+      # Signs access tokens. Separate from SECRET_KEY on purpose: one seals
+      # data at rest, the other mints identity. Falls back if unset.
+      JWT_SECRET: ${JWT_SECRET:-}
+      # Cookies travel in the clear without this. False here because localhost
+      # is not https; set it everywhere else.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
       RUN_CONCURRENCY: ${RUN_CONCURRENCY:-2}
       # The org clock starts work on its own, but only for companies that opted
       # in. Off here stops it entirely, whatever a company has set.

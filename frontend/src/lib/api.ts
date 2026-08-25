@@ -51,6 +51,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     ...init,
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    // The session lives in HTTP-only cookies, so every call has to send them.
+    credentials: "include",
     cache: "no-store",
   });
 
@@ -314,4 +316,19 @@ export const api = {
   },
 
   roles: () => get<Role[]>("/roles"),
+
+  // --- the person using this ------------------------------------------
+  me: () => get<import("./auth").Account>("/users/me"),
+  updateMe: (body: { full_name?: string }) =>
+    patch<import("./auth").Account>("/users/me", body),
+  sessions: () =>
+    get<
+      {
+        id: string;
+        user_agent: string;
+        ip: string;
+        created_at: string | null;
+        expires_at: string | null;
+      }[]
+    >("/users/me/sessions"),
 };
