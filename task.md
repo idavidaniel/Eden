@@ -63,6 +63,21 @@
 - [x] Twelve routes under `/c/[companyId]`, with 308s from the old ones
 - [x] The provenance chip: verdict, then method, then evidence
 
+### Accounts
+
+- [x] Tenants, users and sessions; every company scoped to the organisation
+      that owns it, with existing data adopted rather than orphaned
+- [x] bcrypt passwords, refused rather than truncated past bcrypt's 72-byte read
+- [x] Short-lived access tokens, revocable rotating refresh tokens, and replay
+      detection that ends every session of that user
+- [x] TOTP with sealed secrets, hashed backup codes, and a setup step that does
+      not switch anything on until a real code works
+- [x] Rate limits on signup and login, plus a per-account lockout
+- [x] Scoping enforced structurally — a contextvar and `api/lookups.py`, so a
+      new route cannot forget it
+- [x] Sign in, sign up, second factor and profile in the browser, with the
+      session in HTTP-only cookies
+
 ### Proof
 
 - [x] Exportable work record with a record hash
@@ -71,9 +86,10 @@
 
 ## Next
 
-- [ ] Platform authentication and per-user ownership of companies. Right now
-      anyone who can reach the API is an admin of every company — this is the
-      largest single gap.
+- [ ] Invitations, so an organisation can have more than one person in it —
+      and roles, so they need not all be owners
+- [ ] Email verification, and the address change it would make safe
+- [ ] Password reset. There is no way back in from a forgotten password
 - [ ] Verify MCP bearer tokens against an IdP's JWKS rather than our own store,
       for clients that are not Eden agents
 - [ ] Parallel work per employee — currently one turn each at a time

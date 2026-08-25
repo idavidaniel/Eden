@@ -30,6 +30,27 @@ again. If the file changed after it passed, or somebody quietly tightened the
 standard, the report says so. If nothing was ever checked, it says that too —
 an intact chain over an empty record is not evidence that any work was done.
 
+## Accounts, and walls between them
+
+Signing up creates a person and the **organisation** they own. A tenant owns
+many companies; a company is a workspace of AI employees. Everything is scoped
+to the tenant, and reaching for another one's id answers 404 rather than 403 —
+"that exists but is not yours" is itself information.
+
+| | |
+| --- | --- |
+| **Passwords** | bcrypt, with a length floor and no composition rules. Longer than bcrypt's 72-byte read is refused rather than truncated: two different long passwords must not be the same password. |
+| **Sessions** | A 15-minute JWT access token, and an opaque refresh token whose keyed digest is stored and which rotates on every use. A refresh JWT could not be revoked before expiry, which would make "log out" a suggestion. |
+| **Replay** | A refresh token presented after it was rotated ends every session that user holds. |
+| **Two-factor** | TOTP. Setup does not switch it on until a real code proves the app works — a mis-scanned QR must not lock you out. The secret is sealed at rest; backup codes are hashed, because nothing here needs to read one back. |
+| **Rate limits** | Per-IP on signup and login, plus a per-account lockout — a per-IP limit does nothing against a slow distributed guess. |
+
+Scoping is structural rather than remembered: the caller is resolved once per
+request into a contextvar, so `get_company` cannot be called without one, and
+`api/lookups.py` walks a project, work item, artifact or employee id back to
+the company that owns it. `tests/test_tenancy.py` is written as attempts to get
+at somebody else's data; three of them passed when first run.
+
 ## Any industry
 
 An industry pack is a YAML file that decides the roles, the vocabulary for
@@ -193,7 +214,9 @@ has run is a downgrade that does not work.
 | `NVIDIA_API_KEY` | — | Required for the employees to think |
 | `MODEL` | `nvidia/nemotron-3.5-lightning-30b-a3b` | Any OpenAI-compatible NVIDIA model with tool calling |
 | `EMBEDDING_MODEL` | `nvidia/nv-embedqa-e5-v5` | 1024 dims. Without it, retrieval is lexical and says so |
-| `SECRET_KEY` | `dev-insecure-key` | Seals credentials — change it for anything real |
+| `SECRET_KEY` | `dev-insecure-key` | Seals credentials at rest — change it for anything real |
+| `JWT_SECRET` | falls back to `SECRET_KEY` | Signs access tokens. Should differ: one seals data, the other mints identity |
+| `COOKIE_SECURE` | `false` | On everywhere that is not localhost, or cookies travel in the clear |
 | `DATABASE_URL` | set by compose | Postgres with pgvector |
 | `DATA_DIR` | `/data` | Workspaces and the content-addressed blob store |
 | `ORG_CLOCK` | `1` | The clock itself. Companies still opt in individually |
@@ -203,8 +226,10 @@ has run is a downgrade that does not work.
 
 ## Known limits
 
-- **No authentication.** There are no platform users: anyone who can reach the
-  API is an admin of every company. Agent tokens authenticate *agents*, not you.
+- **One organisation per signup.** Joining an existing one needs invitations,
+  which are not built. Every tenant currently has exactly one person in it.
+- **Email addresses are not verified**, and cannot be changed, because changing
+  one without proving the new address is an account takeover waiting to happen.
 - **Cost is an estimate** from a configurable rate table. Tokens are measured.
 - **Rubric checks need a model**, so re-verification reports them as recorded
   rather than replaying them. The report distinguishes the two.
