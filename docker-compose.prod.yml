@@ -1,0 +1,93 @@
+# Eden, running for real.
+#
+#     docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# The differences from docker-compose.yml are all the same difference: nothing
+# here is set up for someone sitting at the machine. No source is bind-mounted,
+# nothing reloads on edit, and the only port reachable from off the box is the
+# one a tunnel is pointed at.
+#
+# Both application ports bind to 127.0.0.1 on purpose. The Raspberry Pi this
+# runs on has a `cloudflared` container in host network mode, so Cloudflare
+# reaches http://localhost:3000 without the Pi ever listening on its LAN or its
+# public interface. Postgres is not published at all.
+
+name: eden
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env.prod}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:-eden}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-eden}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    # No --reload: the source is baked into the image, and the reloader would
+    # apply migrations on every touched file.
+    command:
+      - uvicorn
+      - main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --timeout-graceful-shutdown=5
+    environment:
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:?set NVIDIA_API_KEY in .env.prod}
+      MODEL: ${MODEL:-nvidia/nemotron-3.5-lightning-30b-a3b}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-eden}
+      # The browser only ever talks to the Next server, which talks to this one
+      # over the compose network. This list is a backstop, not the path in use.
+      CORS_ORIGINS: ${PUBLIC_ORIGIN:?set PUBLIC_ORIGIN in .env.prod}
+      DATA_DIR: /data
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env.prod}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env.prod}
+      # Cloudflare terminates TLS in front of this, so cookies must be secure.
+      COOKIE_SECURE: "true"
+      COOKIE_DOMAIN: ${COOKIE_DOMAIN:-}
+      # Four cores and 4GB of RAM shared with Postgres and a Node server.
+      RUN_CONCURRENCY: ${RUN_CONCURRENCY:-1}
+      ORG_CLOCK: ${ORG_CLOCK:-1}
+      ENABLE_RUNNER_PROFILES: ${ENABLE_RUNNER_PROFILES:-0}
+    volumes:
+      # Deliverables and project git repositories. Losing this directory means
+      # losing every artifact a check would replay, so it is a named volume and
+      # not a container layer.
+      - workspace_data:/data
+      - pub_cache:/opt/pub-cache
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    environment:
+      API_URL: http://backend:8000
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  workspace_data:
+  pub_cache:
